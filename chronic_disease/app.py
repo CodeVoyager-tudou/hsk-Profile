@@ -65,6 +65,11 @@ from document_loader.vector_store import create_vector_store
 conf = Config()
 chronic_conf = Config("config.ini")
 
+# 提示词热更新（可选）：config.ini 里配了 [nacos] server_addr 才会真正启动后台轮询；
+# pytest 进程内自动跳过，保证测试断言的是内置默认提示词（机制见 core/prompt_store.py）
+from core.prompt_store import start_prompt_refresh  # noqa: E402 —— 依赖 conf 的构造时机
+start_prompt_refresh(chronic_conf)
+
 # ===== 惰性单例 =====
 # 为什么不在模块顶层直接创建这三个对象：向量库要加载 BGE 模型（约 1GB）并连接
 # Milvus，底层重依赖（torch / sentence_transformers）本身导入就要十几秒。

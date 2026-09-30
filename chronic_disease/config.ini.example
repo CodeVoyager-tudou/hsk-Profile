@@ -13,6 +13,7 @@
 #   [redis] host / password                                    # 备选存储
 #   [chronic_disease] shop_service_url                         # Java shop-service 地址
 #   [chronic_disease] internal_token                           # 与 Java chronic.internal-token 同值（订单查询用）
+#   [nacos] server_addr / username / password                  # 提示词热更新（可选，不配置即关闭）
 # 其余（分块/检索/窗口/摘要）参数与效果相关，调整前先跑 test_*.py 回归确认。
 
 [chronic_disease]
@@ -34,6 +35,23 @@ disclaimer = 本内容仅供参考，不能替代专业医疗建议。如有不�
 
 # 紧急就医提示
 emergency_tip = 如出现胸痛、呼吸困难、意识模糊等紧急情况，请立即拨打120或前往急诊。
+
+# ============================================
+# Nacos 提示词热更新（可选）
+# ============================================
+[nacos]
+# ★ Nacos 地址（如 192.168.100.128:8848）。留空 = 关闭热更新，全部使用 core/prompts.py 内置默认值。
+# 配置后后台线程每 refresh_interval 秒轮询 prompt_data_id，内容有变化即热生效，无需重启。
+server_addr =
+# 命名空间（留空 = public）；账号口令用 Nacos 控制台账号（与 Java 侧同一个）
+namespace =
+username =
+password =
+# 提示词模板的 dataId / 分组（模板原文见 deploy/nacos/chronic-ai-prompts.yaml）
+prompt_data_id = chronic-ai-prompts
+prompt_group = DEFAULT_GROUP
+# 轮询间隔秒（最小 10）
+refresh_interval = 30
 
 # ============================================
 # 文档处理配置

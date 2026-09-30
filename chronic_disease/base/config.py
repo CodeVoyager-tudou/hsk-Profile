@@ -59,6 +59,20 @@ class Config:
         self.MILVUS_DATABASE_NAME = self.config.get('milvus', 'database_name', fallback='chronic_disease')
         self.MILVUS_COLLECTION_NAME = self.config.get('milvus', 'collection_name', fallback='chronic_disease')
 
+        # ---- [nacos] 提示词热更新（可选）----
+        # 不配置 server_addr 即整段关闭：所有提示词走 core/prompts.py 内置默认，零行为变化。
+        # 账号口令与 Java 侧用的是同一个 Nacos 控制台账号；口令不落盘到仓库（config.ini 不入库）。
+        # 注意 configparser 的 get(fallback=) 只兜「键缺失」不兜「段缺失」，
+        # 老配置文件里没有这一段时必须走空 dict，否则 Config() 初始化直接 NoSectionError。
+        nacos = self.config['nacos'] if self.config.has_section('nacos') else {}
+        self.NACOS_SERVER_ADDR = nacos.get('server_addr', '')
+        self.NACOS_NAMESPACE = nacos.get('namespace', '')
+        self.NACOS_USERNAME = nacos.get('username', '')
+        self.NACOS_PASSWORD = nacos.get('password', '')
+        self.NACOS_PROMPT_DATA_ID = nacos.get('prompt_data_id', 'chronic-ai-prompts')
+        self.NACOS_PROMPT_GROUP = nacos.get('prompt_group', 'DEFAULT_GROUP')
+        self.NACOS_PROMPT_REFRESH = nacos.get('refresh_interval', 30)
+
         # ---- [llm] ----
         self.LLM_MODEL = self.config.get('llm', 'model', fallback='qwen-plus')
         # 密钥优先取环境变量，代码与配置文件里都不落盘真实密钥
