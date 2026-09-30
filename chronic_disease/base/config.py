@@ -69,7 +69,7 @@ class Config:
         self.NACOS_NAMESPACE = nacos.get('namespace', '')
         self.NACOS_USERNAME = nacos.get('username', '')
         self.NACOS_PASSWORD = nacos.get('password', '')
-        self.NACOS_PROMPT_DATA_ID = nacos.get('prompt_data_id', 'chronic-ai-prompts')
+        self.NACOS_PROMPT_DATA_ID = nacos.get('prompt_data_id', 'chronic-ai-prompts.yaml')
         self.NACOS_PROMPT_GROUP = nacos.get('prompt_group', 'DEFAULT_GROUP')
         self.NACOS_PROMPT_REFRESH = nacos.get('refresh_interval', 30)
 

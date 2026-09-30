@@ -48,7 +48,7 @@ namespace =
 username =
 password =
 # 提示词模板的 dataId / 分组（模板原文见 deploy/nacos/chronic-ai-prompts.yaml）
-prompt_data_id = chronic-ai-prompts
+prompt_data_id = chronic-ai-prompts.yaml
 prompt_group = DEFAULT_GROUP
 # 轮询间隔秒（最小 10）
 refresh_interval = 30
