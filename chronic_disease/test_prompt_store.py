@@ -84,7 +84,8 @@ def test_extract_fields_ignores_escaped_braces():
 
 
 def test_parse_prompts_yaml_shapes():
-    ok = parse_prompts_yaml("prompts:\n  router_prompt: |\n    内容")
+    # 真实 dataId 文件末尾带换行，clip 行为保留单个结尾换行
+    ok = parse_prompts_yaml("prompts:\n  router_prompt: |\n    内容\n")
     assert ok == {"router_prompt": "内容\n"}
     assert parse_prompts_yaml("没有prompts段: true") is None
     assert parse_prompts_yaml("just a [broken: yaml") is None
