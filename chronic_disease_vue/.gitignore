@@ -1,0 +1,84 @@
+######################################################################
+# Build Tools
+
+.gradle
+/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+######################################################################
+# IDE
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### JRebel ###
+rebel.xml
+
+### NetBeans ###
+nbproject/private/
+build/*
+nbbuild/
+dist/
+nbdist/
+node_modules/
+.nb-gradle/
+
+######################################################################
+# Others
+*.log
+*.xml.versionsBackup
+*.swp
+
+!*/build/*.java
+!*/build/*.html
+!*/build/*.xml
+
+######################################################################
+# Project specific
+.mimosa/
+.vite/
+coverage/
+.DS_Store
+*.local
+
+######################################################################
+# 环境变量文件（FE-08）
+#
+# 策略说明（重要，请勿随意改动）：
+#   本仓库**有意提交**了 .env / .env.development / .env.production /
+#   .env.staging / .env.test —— 它们是各环境的构建配置（标题、API 前缀、是否开启演示），
+#   不含任何密钥，提交它们是正常做法。
+#
+#   但下面这些"本地/私有"文件**绝不能提交**，它们才是放密钥的地方：
+.env.local
+.env.*.local
+.env.development.local
+.env.production.local
+.env.staging.local
+.env.test.local
+
+# 保险起见再挡一层：任何看起来像密钥的文件名
+*.pem
+*.key
+*.p12
+*.keystore
+
+# ⚠️ 铁律：**绝不要把密钥写进 VITE_ 开头的变量**。
+#    原因：Vite 会把所有 VITE_* 变量的值**内联进前端产物**（JS 文件里能直接搜到），
+#    等于把密钥公开发布给所有人。前端能看到的变量本质上就是公开的。
+#    服务端密钥必须由后端下发（例如登录后返回临时凭证），不能放在前端构建配置里。
+#    本仓库的 scripts/check-env-secrets.mjs 会在 CI/本地检查这一点。

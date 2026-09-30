@@ -1,0 +1,19 @@
+# =============================================================================
+# Nacos 公共配置 · Redis（gateway / user / shop）
+# group: DEFAULT_GROUP        format: YAML
+# 来源：docs/Nacos配置迁移方案.md §7.3
+# points-service 不导入：它的 POM 里没有任何 Redis 依赖（Java 代码亦零处引用），
+#   导入只会误导后来读配置的人。
+#   gateway 用 reactive redis 查令牌黑名单；user 写入黑名单 + 登录失败计数；
+#   shop 用 Redisson 做优惠券领取分布式锁（RedissonConfig 直接读 spring.data.redis.*）。
+# =============================================================================
+# Boot 3 起属性命名空间 spring.redis.* 改名 spring.data.redis.*（内容不变）
+
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:192.168.100.128}
+      port: ${REDIS_PORT:6379}
+      # 口令由环境变量注入
+      password: ${REDIS_PASSWORD}
+      timeout: 2000

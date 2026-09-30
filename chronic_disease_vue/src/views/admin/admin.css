@@ -1,0 +1,104 @@
+/* 管理端四页共用的表格与表单样式（非 scoped 引入，类名带 admin- 前缀隔离） */
+.admin-page { padding-bottom: 24px; }
+.page-pad { padding: 12px 16px; }
+
+.toolbar { display: flex; gap: 8px; margin-bottom: 10px; }
+.toolbar .in, .filter-row .in {
+  padding: 7px 10px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 13px;
+  background: #fff;
+}
+.toolbar input.in { flex: 1; min-width: 0; }
+
+.btn {
+  padding: 5px 10px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  background: #fff;
+  color: #333;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { border-color: #00BFA5; color: #009688; }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.primary { background: #00BFA5; border-color: #00BFA5; color: #fff; font-weight: 600; }
+
+.table-wrap {
+  background: #fff;
+  border-radius: 12px;
+  overflow-x: auto;
+  box-shadow: 0 1px 4px rgba(0,0,0,.04);
+}
+.tb { width: 100%; border-collapse: collapse; font-size: 12px; }
+.tb th, .tb td { padding: 9px 8px; border-bottom: 1px solid #f2f2f2; text-align: left; white-space: nowrap; }
+.tb th { background: #fafafa; color: #666; font-weight: 600; }
+.tb .ellipsis { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+.tb .ok { color: #009688; }
+.tb .off { color: #bbb; }
+.tb .ops { display: flex; gap: 6px; }
+.tb .warn { color: #FF5252; }
+
+.pager { display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 12px; font-size: 13px; color: #666; }
+.empty { text-align: center; color: #bbb; padding: 20px 0; }
+
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.form-grid .in { width: 100%; box-sizing: border-box; }
+.hint { font-size: 11px; color: #999; margin: 6px 0 10px; }
+
+/* 管理端编辑弹窗（药品编辑用；命名与收银台的 dlg-mask 对齐，便于两处维护心智一致） */
+.dlg-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, .45);
+}
+.dlg {
+  width: 640px;
+  max-width: 92vw;
+  max-height: 88vh;
+  overflow: auto;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .2);
+}
+.dlg-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.dlg-sub { color: #999; font-weight: 400; }
+.dlg-x {
+  margin-left: auto;
+  border: 0;
+  background: none;
+  color: #999;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.dlg-body { padding: 14px 16px; }
+.dlg-body label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #666; }
+.dlg-body label.block { margin-bottom: 8px; }
+.dlg-body .ta { resize: vertical; font-family: inherit; }
+.dlg.narrow { width: 460px; }
+.del-text { margin: 0 0 8px; font-size: 13px; color: #333; }
+.del-text b { color: #d32f2f; }
+.btn.warn.solid { background: #FF5252; border-color: #FF5252; color: #fff; font-weight: 600; }
+.btn.warn.solid:hover { background: #e53935; border-color: #e53935; color: #fff; }
+.dlg-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid #f0f0f0;
+}

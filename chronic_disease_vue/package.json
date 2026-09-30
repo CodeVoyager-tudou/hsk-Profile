@@ -1,0 +1,45 @@
+{
+  "name": "chronic_disease_vue",
+  "version": "1.0.0",
+  "description": "慢性病健康商城",
+  "type": "module",
+  "scripts": {
+    "dev": "node --insecure-http-parser ./node_modules/vite/bin/vite.js",
+    "build:prod": "vite build",
+    "build:stage": "vite build --mode staging",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "check:env": "node scripts/check-env-secrets.mjs",
+    "check": "npm run check:env && npm test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@element-plus/icons-vue": "2.3.1",
+    "@vueuse/core": "10.6.1",
+    "axios": "^1.20.0",
+    "element-plus": "2.4.3",
+    "file-saver": "2.0.5",
+    "js-cookie": "3.0.5",
+    "nprogress": "0.2.0",
+    "pinia": "2.1.7",
+    "vue": "3.4.0",
+    "vue-router": "4.2.5"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "5.0.1",
+    "@vue/compiler-sfc": "3.4.0",
+    "@vue/test-utils": "^2.5.0",
+    "happy-dom": "^20.14.0",
+    "sass": "1.69.5",
+    "unplugin-auto-import": "0.17.1",
+    "unplugin-vue-setup-extend-plus": "1.0.0",
+    "vite": "5.0.4",
+    "vite-plugin-compression": "0.5.1",
+    "vite-plugin-svg-icons": "2.0.1",
+    "vitest": "^1.6.1"
+  }
+}

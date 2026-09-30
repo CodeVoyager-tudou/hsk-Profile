@@ -1,0 +1,201 @@
+# 慢性病管理多智能体系统 - 配置模板（config.ini.example）
+#
+# 用法：复制为 config.ini 后按你的环境修改带 ★ 的项——
+#   Windows:  copy config.ini.example config.ini
+#   Linux/macOS:  cp config.ini.example config.ini
+# config.ini 已被 .gitignore 忽略：本机地址与口令留在本地，仓库只分发本模板。
+#
+# ★ 需要按环境修改：
+#   [milvus] host                                              # Milvus 地址
+#   [llm] model / base_url                                     # 本地 Ollama 或云端 OpenAI 兼容端点
+#   [models] bge_m3_path / bge_reranker_path                   # 本机模型目录
+#   [postgres] host / password                                 # 会话 checkpoint 库
+#   [redis] host / password                                    # 备选存储
+#   [chronic_disease] shop_service_url                         # Java shop-service 地址
+#   [chronic_disease] internal_token                           # 与 Java chronic.internal-token 同值（订单查询用）
+# 其余（分块/检索/窗口/摘要）参数与效果相关，调整前先跑 test_*.py 回归确认。
+
+[chronic_disease]
+# 知识源类型（order 供订单智能体使用：它不走向量检索，但前端知识源下拉框要能选到）
+valid_sources = disease,medication,lifestyle,lab,risk,order,mall
+
+# Java shop-service 订单 API 地址（本机开发：shop-service 端口 8083；
+# 注意 8082 是 points-service，别混用。Docker 部署用环境变量 SHOP_SERVICE_URL 覆盖）
+shop_service_url = http://localhost:8083
+
+# ★ 服务间内部令牌：订单查询走 shop-service 的 /internal/order/**，必须带上它，
+# 值必须与 Java 侧 chronic.internal-token 相同（本机即 .env.local 里的 INTERNAL_TOKEN）。
+# 也可用环境变量 INTERNAL_TOKEN 覆盖本项；留空则 Java 侧 fail-closed 返回 403，
+# AI 会回答"查询订单失败"而不是给出错误数据。
+internal_token =
+
+# 免责声明
+disclaimer = 本内容仅供参考，不能替代专业医疗建议。如有不适，请及时就医。
+
+# 紧急就医提示
+emergency_tip = 如出现胸痛、呼吸困难、意识模糊等紧急情况，请立即拨打120或前往急诊。
+
+# ============================================
+# 文档处理配置
+# ============================================
+[document]
+# 数据目录（相对于项目根目录）
+data_dir = chronic_disease/data
+
+# 支持的文档格式（逗号分隔）
+supported_formats = .pdf,.docx,.doc,.ppt,.pptx,.txt,.md,.jpg,.png,.jpeg
+
+# PDF OCR 阈值（图片宽/页面宽，图片高/页面高），低于此比例的图片不进行 OCR
+pdf_ocr_threshold_w = 0.6
+pdf_ocr_threshold_h = 0.6
+
+# OCR 是否使用 CUDA 加速（True/False）
+ocr_use_cuda = True
+
+# 表格识别模式：simple（仅文本）/ table（识别表格结构）
+table_mode = simple
+
+# 图片 OCR 是否启用（处理独立图片文件）
+img_ocr_enabled = True
+
+# ============================================
+# 文本分块配置
+# ============================================
+[chunk]
+# 父块大小（字符数）
+parent_chunk_size = 1000
+
+# 子块大小（字符数）
+child_chunk_size = 200
+
+# 块重叠大小（字符数）
+chunk_overlap = 30
+
+# 分块策略：recursive（递归分块）/ fixed（固定长度）
+split_strategy = recursive
+
+# 中文分块分隔符优先级（正则表达式，逗号分隔）
+# 优先级从高到低：段落 -> 换行 -> 句号 -> 分号 -> 逗号
+separators = \n\n,\n,。|！|？,；|;\s,，|,\s
+
+# 是否保留分隔符在块中
+keep_separator = True
+
+# ============================================
+# Milvus 数据库配置
+# ============================================
+[milvus]
+# Milvus 主机地址
+host = 192.168.100.128
+# Milvus 端口
+port = 19530
+# 慢性病专用数据库名（独立数据库，不使用 itcast）
+database_name = chronic_disease
+
+# ============================================
+# Milvus 集合配置
+# ============================================
+[milvus_collection]
+# 慢性病专用集合名
+collection_name = chronic_disease_rag
+
+# 稠密向量维度（BGE-M3 为 1024）
+dense_dim = 1024
+
+# IVF_FLAT 索引参数
+nlist = 128
+
+# 稀疏向量索引参数
+drop_ratio_build = 0.2
+
+# 混合检索权重（稠密向量权重, 稀疏向量权重）
+dense_weight = 1.0
+sparse_weight = 0.7
+
+# 检索返回数量
+retrieval_k = 5
+
+# 重排序后候选数量
+candidate_m = 2
+
+# 全局检索每源候选数：全局检索（无 source_filter）时每个知识源各取 per_source_k 个候选再统一重排，
+# 避免 disease 等大块数源（占库 70%+）垄断候选池导致 lab/lifestyle/medication/risk 无法进入最终结果
+per_source_k = 2
+
+# ============================================
+# LLM 配置（慢性病系统专属，优先生效；缺项回退根 config.ini）
+# 当前指向本地 Ollama，改回云端：model = qwen3-max 并换回 dashscope_api_key/base_url
+# ============================================
+[llm]
+# LLM 模型名（Ollama 模型 tag，ollama list 可查）
+model = qwen2.5:7b
+# API Key（Ollama 不校验，占位即可）
+api_key = ollama
+# OpenAI 兼容地址
+base_url = http://localhost:11434/v1
+
+# ============================================
+# PostgreSQL 配置（会话 checkpoint 持久化）
+# ============================================
+[postgres]
+# PostgreSQL 主机地址
+host = 192.168.100.128
+# PostgreSQL 端口
+port = 5432
+# 用户名（postgres:17 容器超级用户）
+user = postgres
+# 密码
+password = 1234
+# 数据库名（会话 checkpoint 表所在库）
+database = chronic_disease
+# 会话 checkpoint 表名
+table = chronic_chat_session
+
+# ============================================
+# Redis 配置（备选存储；会话持久化优先走上面的 PostgreSQL）
+# ============================================
+[redis]
+# Redis 主机地址
+host = 192.168.100.128
+# Redis 端口
+port = 6379
+# Redis 密码
+password = 1234
+# Redis 数据库编号
+db = 0
+
+# ============================================
+# 会话与对话窗口配置
+# ============================================
+[chat]
+# 进入 LLM 上下文的最近消息数（10 条 = 5 轮问答原文）
+window_messages = 10
+
+# 未压缩消息超过此数时触发一次摘要压缩（把窗口之前的消息并入滚动摘要）
+# 设为 14：约每多出 2 轮对话才压缩一次，摊薄摘要 LLM 调用频率
+compress_trigger = 14
+
+# 滚动摘要长度上限（字符）
+summary_max_chars = 800
+
+# 单条消息进入上下文时的截断长度（字符）
+message_truncate_chars = 800
+
+# 会话全量消息保存上限（供前端回看，超出从头裁剪最旧消息）
+max_messages = 200
+
+# 会话保留天数（PostgreSQL 模式惰性清理：updated_at 超过该天数即删除；0 表示不过期）
+session_ttl_days = 7
+
+# 自动标题长度（取首问前 N 字，重命名接口可覆盖）
+auto_title_len = 24
+
+# ============================================
+# 本地模型路径配置
+# ============================================
+[models]
+# BGE-M3 嵌入模型路径
+bge_m3_path = D:\xuexi\model\bge-m3
+
+# BGE-Reranker 重排序模型路径
+bge_reranker_path = D:\xuexi\model\bge-reranker-large

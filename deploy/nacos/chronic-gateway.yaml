@@ -1,0 +1,70 @@
+# =============================================================================
+# Nacos 服务专属配置 · chronic-gateway
+# group: DEFAULT_GROUP        format: YAML
+# 来源：docs/Nacos配置迁移方案.md §7.6
+# 本地 application.yml 只保留引导项与启动护栏（§2、§6.1）
+# 注意：spring.main.web-application-type、spring.autoconfigure.exclude、server.port
+#       刻意留在本地，**不要**搬到这里
+# =============================================================================
+
+spring:
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          # 关闭按服务名直连路由，避免绕过 /api 前缀的显式路由与鉴权规则
+          enabled: false
+          lower-case-service-id: true
+      routes:
+        - id: user-service
+          uri: lb://chronic-user-service
+          predicates:
+            - Path=/api/user/**
+          filters:
+            - StripPrefix=1
+        - id: points-service
+          uri: lb://chronic-points-service
+          # 只放行前端需要的查询/签到/余额接口；add/deduct/refund、account/deduct、account/refund
+          # 属服务间内部接口，不暴露到网关（Feign 内网直连调用，且服务端校验 X-Internal-Token）
+          predicates:
+            - Path=/api/points/sign-in,/api/points/sign-in/week,/api/points/record/{userId:\d+},/api/points/{userId:\d+},/api/account/recharge,/api/account/record/{userId:\d+},/api/account/{userId:\d+}
+          filters:
+            - StripPrefix=1
+        - id: shop-seckill
+          # 秒杀专用路由：必须放在 shop-service 之前（精确路径优先匹配），
+          # 配合 SentinelGatewayConfig 里的 shop-seckill 规则做独立低阈值限流
+          uri: lb://chronic-shop-service
+          predicates:
+            - Path=/api/shop/seckill/**
+          filters:
+            - StripPrefix=1
+        - id: admin-shop
+          # 管理端路由：AuthFilter 对 /api/admin/** 额外校验 JWT role=ADMIN（非管理员 403）；
+          # 管理操作在服务内写审计表（admin_audit）。后续若加 user 侧管理接口，
+          # 需拆分路由指向对应服务，保持 /api/admin/** 前缀约定不变
+          uri: lb://chronic-shop-service
+          predicates:
+            - Path=/api/admin/**
+          filters:
+            - StripPrefix=1
+        - id: shop-service
+          uri: lb://chronic-shop-service
+          predicates:
+            - Path=/api/shop/**
+          filters:
+            - StripPrefix=1
+        - id: ai-service
+          # AI 请求走 user-service（SSE 输出），由其经 WebClient -> nginx:9000 负载均衡调用 Python；
+          # Python 不直接面向前端
+          uri: lb://chronic-user-service
+          predicates:
+            - Path=/api/ai/**
+          filters:
+            # /api/ai/query/stream -> user-service /user/ai/query/stream
+            - RewritePath=/api/ai/(?<segment>.*), /user/ai/$\{segment}
+    sentinel:
+      scg:
+        fallback:
+          mode: response
+          response-status: 429
+          response-body: '{"code":429,"message":"请求过于频繁，请稍后重试"}'

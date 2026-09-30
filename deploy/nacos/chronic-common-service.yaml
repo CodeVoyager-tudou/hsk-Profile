@@ -1,0 +1,50 @@
+# =============================================================================
+# Nacos 公共配置 · 三个连库的 Servlet 业务服务（user / points / shop）
+# group: DEFAULT_GROUP        format: YAML        gateway 不导入本文件
+# 来源：docs/Nacos配置迁移方案.md §7.2
+# 与 chronic-common.yaml 分开的原因：
+#   1) 本文件内容只对"连库的 Servlet 服务"有意义
+#   2) 尤其 knife4j.enable —— SecurityHardeningValidator 在 prod 下对 knife4j.enable=true
+#      一律拒绝启动，而网关既没有 knife4j 依赖也不是 Servlet 应用。若放进全局公共配置，
+#      等于给网关凭空加一条它无法满足的生产自检项。
+# 数据库 url 各服务不同（user / points / shop），留在各服务自己的 dataId。
+# =============================================================================
+
+spring:
+  datasource:
+    type: com.alibaba.druid.pool.DruidDataSource
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # url 在各自服务的 dataId 里；口令仍由环境变量注入，不落 Nacos 明文
+    username: ${MYSQL_USERNAME}
+    password: ${MYSQL_PASSWORD}
+    druid:
+      initial-size: 5
+      min-idle: 5
+      max-active: 20
+  flyway:
+    # 表结构纳入版本管理，替代手工执行 sql/init.sql（详见 sql/README.md）
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+    validate-on-migrate: true
+
+mybatis-plus:
+  mapper-locations: classpath:mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    # 走 slf4j 而不是 stdout：SQL 仅在把对应 mapper 包日志级别调到 debug 时才输出
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+xxl:
+  job:
+    admin:
+      addresses: ${XXL_JOB_ADMIN:http://192.168.100.128:8082/xxl-job-admin}
+    # executor.appname 与 executor.port 三个服务各不相同，留在各自的 dataId
+    accessToken: ${XXL_JOB_ACCESS_TOKEN}
+
+knife4j:
+  # 生产必须注入 KNIFE4J_ENABLE=false，否则启动自检直接拒绝启动
+  enable: ${KNIFE4J_ENABLE:true}
+  setting:
+    language: zh-CN

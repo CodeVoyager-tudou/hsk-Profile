@@ -1,0 +1,73 @@
+# =============================================================================
+# Nacos 服务专属配置 · chronic-shop-service
+# group: DEFAULT_GROUP        format: YAML
+# 来源：docs/Nacos配置迁移方案.md §7.9
+# =============================================================================
+
+# Sentinel 对 Feign 的支持 + Feign 超时已并入下方 spring.cloud.openfeign：
+# Boot 3 / Spring Cloud 2023 起 feign.* 属性命名空间迁移到 spring.cloud.openfeign.*
+# （积分服务熔断时仍触发 PointsFeignClientFallback 降级；显式超时避免 openfeign
+#   默认读超时 60s 把事务内连接长时间占死）
+
+chronic:
+  pay:
+    # 内置模拟支付渠道是否即时确认。**默认 false**：现金单停 PENDING，走收银台
+    # （30 分钟支付窗口 + RocketMQ 延迟消息超时自动关单，见 timeout-delay-level）。
+    # 显式设 true = "一键购买"旧行为（下单即 PAID）——**严禁生产开启**：
+    # SecurityHardeningValidator 会在 prod/production profile 下断言本项不得为 true。
+    # 置 false 时也可用模拟回调 POST /shop/order/pay/callback（内部令牌）或收银台推进 PAID。
+    mock-auto-confirm: ${PAY_MOCK_AUTO_CONFIRM:false}
+    # 待支付订单超时关单（分钟），由 xxl-job 定时扫描（兜底路径，需调度中心触发）。
+    # 与延迟消息的真实关单时点（30m + 2m 宽限 = 32 分钟）保持一致
+    pending-timeout-minutes: 32
+    # 支付超时关单 · RocketMQ 延迟消息（主路径，无需调度中心）。
+    # 展示窗口 30 分钟（前端倒计时），真实关单时点 32 分钟（含 2 分钟宽限期，
+    # 吸收"展示窗口最后一秒点支付"的在途请求）。两种发送模式：
+    #   chain（默认，兼容 4.x broker）：两段固定档位串联——
+    #     第一段 level 16 = 30m 到点检查，仍 PENDING → 第二段 level 6 = 2m 后 CAS 关单
+    #   timer（broker 升级 5.x 且开启时间轮后切换）：单条消息 + TIMER_DELIVER_MS 任意延迟，
+    #     投递时间 = 下单 + 32 分钟；broker 不支持时消费者识别"提前到达"自动降级回 chain
+    # 演示快速看全流程（chain 模式）：两段分别设 level 2（1m）+ level 3（10s），约 70 秒
+    timeout-mode: ${PAY_TIMEOUT_MODE:chain}
+    timeout-delay-level: ${PAY_TIMEOUT_DELAY_LEVEL:16}
+    timeout-grace-delay-level: ${PAY_TIMEOUT_GRACE_DELAY_LEVEL:6}
+    timeout-topic: ${PAY_TIMEOUT_TOPIC:order-pay-timeout-topic}
+    # 兜底扫表开关（本地 @Scheduled，每分钟；关单 CAS 幂等，与延迟消息双跑无害）。
+    # 生产已有 xxl-job 调度时可设 false 单走调度中心
+    timeout-sweep-enabled: ${PAY_TIMEOUT_SWEEP_ENABLED:true}
+  shop:
+    # 订单事件 topic（J-14 outbox）：生产端与消费端共用这个配置，换 topic 只改一处
+    order-event:
+      topic: ${ORDER_EVENT_TOPIC:shop-order-topic}
+      consumer-group: ${ORDER_EVENT_CONSUMER_GROUP:chronic-shop-order-event-consumer}
+
+spring:
+  cloud:
+    openfeign:
+      sentinel:
+        enabled: true
+      client:
+        config:
+          default:
+            connectTimeout: 1000
+            readTimeout: 3000
+  datasource:
+    # useAffectedRows=false（Connector/J 默认值，显式写明）： MedicineMapper.updateEditable 的
+    # "返回 0 行 → 404" 依赖**匹配行数**语义；若改成 true（变更行数），同值 patch 会被误判 404（复核 P2-11）
+    url: jdbc:mysql://${MYSQL_HOST:192.168.100.128}:${MYSQL_PORT:3307}/shop?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useAffectedRows=false
+
+# RocketMQ（J-14 outbox 中继 + 秒杀消息）——注意是**顶层键**：
+# rocketmq-spring-boot-starter 读 rocketmq.name-server；此前误写在 spring: 之下，
+# 消费者容器启动时因 name-server 缺失直接崩溃（jar 首启暴露的潜伏配置错误）。
+# 搬到 Nacos 时同样必须是顶层键，不要顺手缩进到 spring: 里面。
+rocketmq:
+  name-server: ${ROCKETMQ_NAMESRV:192.168.100.128:9876}
+  producer:
+    group: chronic-shop-producer
+    send-message-timeout: 5000
+
+xxl:
+  job:
+    executor:
+      appname: chronic-shop-service
+      port: 9993

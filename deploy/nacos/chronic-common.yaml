@@ -1,0 +1,47 @@
+# =============================================================================
+# Nacos 公共配置 · 全服务（gateway / user / points / shop 全部导入）
+# group: DEFAULT_GROUP        format: YAML
+# 来源：docs/Nacos配置迁移方案.md §7.1
+# 只放「四个服务取值完全相同」的非引导项；引导项（application.name / nacos 地址 /
+# config.import）留在各服务本地 application.yml，否则自举循环。
+# 密钥只写 ${ENV} 占位符，真实值由环境变量注入，绝不落到 Nacos 明文。
+# =============================================================================
+
+server:
+  # 优雅停机：四服务一致（server.port 属进程启动契约，留在各服务本地 application.yml）
+  shutdown: graceful
+
+chronic:
+  # JWT 密钥（>=32 字节强随机值），由环境变量 JWT_SECRET 提供，缺失即启动失败。
+  # gateway 签发/验签、user 登录签发、points/shop 经 common 的 JwtUtil 解析 —— 四者必须是同一个值。
+  # 放在公共配置里，"gateway 与 user 必须一致"这条人工约束变成结构上只可能有一个值。
+  jwt:
+    secret: ${JWT_SECRET}
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  cloud:
+    sentinel:
+      transport:
+        # 四个服务共用同一个 Sentinel 控制台
+        dashboard: ${SENTINEL_DASHBOARD:192.168.100.128:8858}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      # 原先四个服务各写一遍自己的名字，改为引用本地 spring.application.name
+      application: ${spring.application.name}
+
+logging:
+  level:
+    root: info
+    com.chronic: info

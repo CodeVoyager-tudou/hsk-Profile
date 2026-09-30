@@ -1,0 +1,2 @@
+# Boot 3 起不再从本文件读取自动装配类（EnableAutoConfiguration 条目被忽略）。
+# chronic-common 的自动装配已迁移到 META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports

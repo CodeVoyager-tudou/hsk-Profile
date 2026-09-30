@@ -1,0 +1,40 @@
+# =============================================================================
+# Nacos 服务专属配置 · chronic-user-service
+# group: DEFAULT_GROUP        format: YAML
+# 来源：docs/Nacos配置迁移方案.md §7.7
+# =============================================================================
+
+# Python AI 服务（WebClient 调用），base-url 指向 nginx 负载均衡入口（多实例 8001/8002）
+chronic:
+  ai:
+    base-url: ${AI_BASE_URL:http://localhost:9000}
+    connect-timeout-ms: 2000
+    # 流式「事件间隔」超时：Python 完整 RAG 链（路由→检索→专家→整合）为 2~3 次大模型调用，
+    # 本地 Ollama 走 CPU 推理时每次调用都耗时可观（模型冷加载实测约 12 秒），整链首 token
+    # 间隔容易超过 60 秒——60 秒会在首 token 前掐断流（表现为前端一直「思考中」）。
+    # 与 Python 侧 LLM_TIMEOUT=300 对齐；若换 GPU 推理可酌情调回小值。
+    response-timeout-seconds: 300
+    # 调用 Python AI 的内部令牌（服务端启用后必须携带；未启用时留空）
+    internal-token: ${AI_INTERNAL_TOKEN:}
+    # AI 流式问答的最大并发数（保护本机模型/显存，超出直接快速失败）。
+    # 由 AiProxyController 的信号量真正强制执行，超出的请求会立即返回 error 事件。
+    # 注意这与网关的 QPS 限流是两回事：QPS 限的是"每秒新增请求数"，
+    # 而一个流式请求可能持续 60 秒，所以必须单独限制"同时在跑的数量"。
+    max-concurrent-requests: 8
+  # 登录防撞库：连续失败 N 次锁定 M 秒（Redis 计数）
+  security:
+    login-max-failures: 5
+    login-lock-seconds: 900
+
+spring:
+  datasource:
+    # 三库各不相同（user / points / shop），故 url 留服务专属配置；
+    # 池参数/驱动/Flyway/MyBatis-Plus 在 chronic-common-service.yaml
+    # useAffectedRows=false：与 Connector/J 默认一致，显式写明"匹配行数"语义依赖（复核 P2-11）
+    url: jdbc:mysql://${MYSQL_HOST:192.168.100.128}:${MYSQL_PORT:3307}/user?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useAffectedRows=false
+
+xxl:
+  job:
+    executor:
+      appname: chronic-user-service
+      port: 9991

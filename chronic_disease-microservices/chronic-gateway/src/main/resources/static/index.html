@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>慢性病健康商城</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "Microsoft YaHei", "PingFang SC", sans-serif; background: #f4f6f9; color: #333; }
+  header { background: linear-gradient(135deg, #1f6f43, #2e9e63); color: #fff; padding: 16px 32px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+  header h1 { font-size: 20px; }
+  .user-box { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 14px; }
+  .user-box input { width: 70px; padding: 5px 8px; border: none; border-radius: 4px; }
+  .user-box .balance { background: rgba(255,255,255,.2); padding: 5px 12px; border-radius: 12px; }
+  nav { display: flex; background: #fff; border-bottom: 1px solid #e5e5e5; padding: 0 32px; }
+  nav button { border: none; background: none; padding: 14px 24px; font-size: 15px; cursor: pointer; color: #666; border-bottom: 3px solid transparent; }
+  nav button.active { color: #1f6f43; border-bottom-color: #1f6f43; font-weight: bold; }
+  main { max-width: 1200px; margin: 20px auto; padding: 0 16px; }
+  .page { display: none; }
+  .page.active { display: block; }
+  .card { background: #fff; border-radius: 10px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .card h2 { font-size: 17px; margin-bottom: 14px; color: #1f6f43; }
+  /* 药品 */
+  .toolbar { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  .toolbar input, .toolbar select { padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; }
+  .med-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+  .med { border: 1px solid #eee; border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 6px; }
+  .med .name { font-size: 15px; font-weight: bold; }
+  .med .cat { display: inline-block; font-size: 12px; color: #2e9e63; background: #e8f7ee; padding: 1px 8px; border-radius: 8px; width: fit-content; }
+  .med .price { color: #e04b3a; font-weight: bold; }
+  .med .points-price { font-size: 13px; color: #b8860b; }
+  .med .stock { font-size: 12px; color: #999; }
+  .med .ops { display: flex; gap: 8px; margin-top: 6px; align-items: center; flex-wrap: wrap; }
+  .med select { font-size: 12px; padding: 4px; max-width: 130px; }
+  input[type=number] { width: 56px; padding: 5px; border: 1px solid #ccc; border-radius: 4px; }
+  button.btn { border: none; border-radius: 6px; padding: 7px 14px; cursor: pointer; font-size: 13px; }
+  .btn-primary { background: #2e9e63; color: #fff; }
+  .btn-gold { background: #d4a017; color: #fff; }
+  .btn-danger { background: #eee; color: #e04b3a; }
+  .btn:disabled { background: #ccc; cursor: not-allowed; }
+  /* 签到 */
+  .week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; margin-top: 10px; }
+  .day { text-align: center; border: 1px solid #eee; border-radius: 8px; padding: 12px 4px; }
+  .day.signed { background: #e8f7ee; border-color: #2e9e63; }
+  .day.today { border-color: #d4a017; box-shadow: 0 0 0 2px #f3e2b3; }
+  .day .wd { font-size: 13px; color: #666; }
+  .day .pt { color: #d4a017; font-weight: bold; margin: 4px 0; }
+  .day .ok { font-size: 18px; }
+  .sign-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  /* 优惠券 */
+  .coupon { display: flex; justify-content: space-between; align-items: center; border: 1px dashed #d4a017; border-radius: 8px; padding: 12px 16px; margin-bottom: 10px; background: #fffdf5; }
+  .coupon .amt { font-size: 22px; color: #e04b3a; font-weight: bold; }
+  .coupon .cond { font-size: 13px; color: #666; }
+  .coupon .limit { font-size: 12px; color: #999; }
+  .coupon.used { opacity: .55; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; }
+  th { color: #888; font-weight: normal; }
+  .tag { font-size: 12px; padding: 2px 8px; border-radius: 8px; }
+  .tag-PAID { background: #e8f7ee; color: #2e9e63; }
+  .tag-CANCELLED { background: #fdecea; color: #e04b3a; }
+  .tag-PENDING { background: #fff7e0; color: #b8860b; }
+  .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #333; color: #fff; padding: 10px 22px; border-radius: 6px; opacity: 0; transition: opacity .3s; z-index: 99; max-width: 80vw; }
+  .toast.show { opacity: .92; }
+  .empty { text-align: center; color: #aaa; padding: 30px 0; }
+  .pager { text-align: center; margin-top: 14px; }
+  /* 登录/注册弹层：网关 AuthFilter 对 /api/shop、/api/points 等均要求 JWT，
+     demo 页必须先登录拿到 token 才能加载数据 */
+  .auth-mask { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 200; }
+  .auth-card { background: #fff; border-radius: 10px; padding: 28px 32px; width: 320px; box-shadow: 0 8px 30px rgba(0,0,0,.2); }
+  .auth-card h2 { color: #1f6f43; margin-bottom: 18px; font-size: 20px; text-align: center; }
+  .auth-form { display: flex; flex-direction: column; gap: 10px; }
+  .auth-form input { padding: 9px 12px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
+  .auth-form input:focus { outline: none; border-color: #2e9e63; }
+  .auth-switch { text-align: center; font-size: 13px; color: #666; margin-top: 4px; }
+  .auth-switch a { color: #2e9e63; text-decoration: none; margin-left: 4px; }
+  .auth-tip { min-height: 18px; font-size: 12px; color: #e04b3a; text-align: center; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>💊 慢性病健康商城</h1>
+  <div class="user-box">
+    <span id="userInfo" style="display:none">
+      欢迎，<b id="usernameLabel">-</b>（ID <span id="userIdLabel">-</span>）
+      <button class="btn btn-danger" onclick="logout()">退出</button>
+    </span>
+    <span class="balance">积分：<b id="balance">-</b></span>
+  </div>
+</header>
+
+<nav>
+  <button class="active" data-page="shop" onclick="showPage('shop')">药品商城</button>
+  <button data-page="signin" onclick="showPage('signin')">每日签到</button>
+  <button data-page="coupon" onclick="showPage('coupon')">优惠券</button>
+  <button data-page="order" onclick="showPage('order')">我的订单</button>
+</nav>
+
+<main>
+  <!-- 药品商城 -->
+  <div class="page active" id="page-shop">
+    <div class="card">
+      <div class="toolbar">
+        <input id="keyword" placeholder="药品名/通用名/适应症" style="width:220px">
+        <select id="category"><option value="">全部分类</option><option>慢病用药</option><option>解热镇痛</option><option>抗感染</option></select>
+        <button class="btn btn-primary" onclick="loadMedicines(1)">搜索</button>
+      </div>
+      <div class="med-grid" id="medGrid"><div class="empty">加载中...</div></div>
+      <div class="pager">
+        <button class="btn" onclick="loadMedicines(medPage-1)" id="prevBtn">上一页</button>
+        第 <span id="medPage">1</span> 页
+        <button class="btn" onclick="loadMedicines(medPage+1)">下一页</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 每日签到 -->
+  <div class="page" id="page-signin">
+    <div class="card">
+      <h2>本周签到（周一~周日循环，全勤额外 +<span id="bonus">100</span>）</h2>
+      <div class="sign-head">
+        <button class="btn btn-gold" id="signBtn" onclick="doSignIn()">今日签到领积分</button>
+        <span id="signSummary" style="color:#666;font-size:14px"></span>
+      </div>
+      <div class="week" id="weekGrid"><div class="empty">加载中...</div></div>
+    </div>
+    <div class="card">
+      <h2>积分流水（最近 20 条）</h2>
+      <table><thead><tr><th>时间</th><th>变动</th><th>类型</th><th>说明</th></tr></thead>
+      <tbody id="recordBody"></tbody></table>
+    </div>
+  </div>
+
+  <!-- 优惠券 -->
+  <div class="page" id="page-coupon">
+    <div class="card">
+      <h2>领券中心（进行中的活动）</h2>
+      <div id="activityList"><div class="empty">加载中...</div></div>
+    </div>
+    <div class="card">
+      <h2>我的优惠券</h2>
+      <div id="myCouponList"><div class="empty">加载中...</div></div>
+    </div>
+  </div>
+
+  <!-- 我的订单 -->
+  <div class="page" id="page-order">
+    <div class="card">
+      <h2>订单列表</h2>
+      <table><thead><tr><th>订单号</th><th>药品</th><th>数量</th><th>金额</th><th>优惠</th><th>耗积分</th><th>支付方式</th><th>状态</th><th>时间</th><th>操作</th></tr></thead>
+      <tbody id="orderBody"></tbody></table>
+    </div>
+  </div>
+</main>
+
+<!-- 登录/注册弹层：无 token 时展示，401 时自动重新弹出 -->
+<div id="authMask" class="auth-mask" style="display:none">
+  <div class="auth-card">
+    <h2 id="authTitle">登录</h2>
+    <div class="auth-form">
+      <input id="authUsername" placeholder="用户名" autocomplete="username">
+      <input id="authPassword" type="password" placeholder="密码" autocomplete="current-password">
+      <input id="authNickname" placeholder="昵称（仅注册需要）" style="display:none">
+      <button class="btn btn-primary" id="authSubmit" onclick="submitAuth()">登录</button>
+      <div class="auth-switch">
+        <span id="authSwitchText">还没有账号？</span>
+        <a href="javascript:void(0)" onclick="toggleAuthMode()" id="authSwitchLink">去注册</a>
+      </div>
+      <div class="auth-tip" id="authTip"></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ===== 基础配置 =====
+// 直接打开静态文件时回退到网关地址
+const API_BASE = location.origin.startsWith('http') ? '' : 'http://localhost:8080';
+const LS_TOKEN = 'cd_token';
+const LS_REFRESH = 'cd_refresh';
+const LS_USERID = 'cd_userId';
+const LS_USERNAME = 'cd_username';
+const LS_NICKNAME = 'cd_nickname';
+
+let medPage = 1, totalPages = 1;
+let authMode = 'login'; // 'login' | 'register'
+
+// ===== 鉴权 =====
+function getToken() { return localStorage.getItem(LS_TOKEN) || ''; }
+function uid() { return localStorage.getItem(LS_USERID) || ''; }
+function isLogged() { return !!getToken() && !!uid(); }
+function clearAuth() {
+  [LS_TOKEN, LS_REFRESH, LS_USERID, LS_USERNAME, LS_NICKNAME].forEach(k => localStorage.removeItem(k));
+}
+
+function showAuth() {
+  document.getElementById('authMask').style.display = 'flex';
+  document.getElementById('userInfo').style.display = 'none';
+}
+function hideAuth() {
+  document.getElementById('authMask').style.display = 'none';
+  document.getElementById('userInfo').style.display = 'inline';
+  document.getElementById('usernameLabel').textContent =
+    localStorage.getItem(LS_NICKNAME) || localStorage.getItem(LS_USERNAME) || '-';
+  document.getElementById('userIdLabel').textContent = uid();
+}
+function toggleAuthMode() {
+  authMode = authMode === 'login' ? 'register' : 'login';
+  const isLogin = authMode === 'login';
+  document.getElementById('authTitle').textContent = isLogin ? '登录' : '注册';
+  document.getElementById('authSubmit').textContent = isLogin ? '登录' : '注册';
+  document.getElementById('authNickname').style.display = isLogin ? 'none' : 'block';
+  document.getElementById('authSwitchText').textContent = isLogin ? '还没有账号？' : '已有账号？';
+  document.getElementById('authSwitchLink').textContent = isLogin ? '去注册' : '去登录';
+  const tip = document.getElementById('authTip');
+  tip.textContent = ''; tip.style.color = '#e04b3a';
+}
+async function submitAuth() {
+  const username = document.getElementById('authUsername').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const tip = document.getElementById('authTip');
+  tip.style.color = '#e04b3a';
+  if (!username || !password) { tip.textContent = '用户名和密码不能为空'; return; }
+  try {
+    if (authMode === 'register') {
+      const nickname = document.getElementById('authNickname').value.trim() || username;
+      const regRes = await fetch(API_BASE + '/api/user/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password, nickname })
+      });
+      const regBody = await regRes.json().catch(() => ({}));
+      if (regBody.code !== 200) { tip.textContent = regBody.message || '注册失败'; return; }
+      // 注册成功后切回登录模式，提示用户登录
+      authMode = 'login';
+      toggleAuthMode();
+      const t2 = document.getElementById('authTip');
+      t2.textContent = '注册成功，请登录'; t2.style.color = '#2e9e63';
+      return;
+    }
+    const res = await fetch(API_BASE + '/api/user/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const body = await res.json().catch(() => ({}));
+    if (body.code !== 200 || !body.data || !body.data.token) {
+      tip.textContent = body.message || '登录失败';
+      return;
+    }
+    localStorage.setItem(LS_TOKEN, body.data.token);
+    if (body.data.refreshToken) localStorage.setItem(LS_REFRESH, body.data.refreshToken);
+    localStorage.setItem(LS_USERID, String(body.data.userId));
+    localStorage.setItem(LS_USERNAME, body.data.username || username);
+    localStorage.setItem(LS_NICKNAME, body.data.nickname || body.data.username || username);
+    hideAuth();
+    toast('登录成功，欢迎 ' + (body.data.nickname || username));
+    refreshAll();
+  } catch (e) {
+    tip.textContent = '网络异常：' + e.message;
+  }
+}
+async function logout() {
+  const token = getToken();
+  try {
+    if (token) {
+      await fetch(API_BASE + '/api/user/logout', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+    }
+  } catch (_) {}
+  clearAuth();
+  showAuth();
+  toast('已退出登录');
+}
+
+// ===== 通用请求：自动带 Authorization，401 自动弹登录 =====
+async function api(path, options = {}) {
+  const sep = path.includes('?') ? '&' : '?';
+  const headers = Object.assign({}, options.headers || {});
+  const token = getToken();
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const res = await fetch(API_BASE + path + sep + '_t=' + Date.now(),
+                          Object.assign({}, options, { headers }));
+  if (res.status === 401) {
+    clearAuth();
+    showAuth();
+    return { code: 401, message: '登录已过期，请重新登录' };
+  }
+  const body = await res.json().catch(() => ({ code: res.status, message: 'HTTP ' + res.status }));
+  return body;
+}
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._timer); t._timer = setTimeout(() => t.classList.remove('show'), 2500);
+}
+function ok(body) { return body && body.code === 200; }
+function showPage(name) {
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.page === name));
+  document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + name));
+  if (isLogged()) refreshAll();
+}
+
+/* ---------- 商城 ---------- */
+async function loadMedicines(page) {
+  if (page < 1) return;
+  medPage = page;
+  const kw = encodeURIComponent(document.getElementById('keyword').value.trim());
+  const cat = encodeURIComponent(document.getElementById('category').value);
+  const body = await api(`/api/shop/medicine/page?pageNum=${medPage}&pageSize=9&keyword=${kw}&category=${cat}`);
+  const grid = document.getElementById('medGrid');
+  if (!ok(body)) { grid.innerHTML = `<div class="empty">加载失败: ${body.message || ''}</div>`; return; }
+  const { records, pages } = body.data;
+  totalPages = pages;
+  document.getElementById('medPage').textContent = medPage;
+  document.getElementById('prevBtn').disabled = medPage <= 1;
+  if (!records.length) { grid.innerHTML = '<div class="empty">没有符合条件的药品</div>'; return; }
+  grid.innerHTML = records.map(m => `
+    <div class="med">
+      <span class="cat">${m.category || '-'}</span>
+      <div class="name">${m.name}</div>
+      <div style="font-size:12px;color:#888">适应症：${(m.indication || '-').slice(0, 40)}</div>
+      <div class="price">￥${m.price} <span class="stock">库存 ${m.stock}</span></div>
+      <div class="points-price">${m.pointsPrice > 0 ? `积分兑换 ${m.pointsPrice} 分/件` : '不支持积分兑换'}</div>
+      <div class="ops">
+        <input type="number" id="qty${m.id}" value="1" min="1" max="99">
+        <button class="btn btn-primary" onclick="buy(${m.id})">购买</button>
+        ${m.pointsPrice > 0 ? `<button class="btn btn-gold" onclick="exchange(${m.id})">积分兑换</button>` : ''}
+      </div>
+      <select id="cp${m.id}"><option value="">不用优惠券</option></select>
+    </div>`).join('');
+  await loadMyCouponsForSelect(records.map(m => m.id));
+}
+
+async function loadMyCouponsForSelect(medIds) {
+  const body = await api(`/api/shop/coupon/my/${uid()}?status=UNUSED`);
+  const usable = ok(body) ? body.data.filter(c => c.status === 'UNUSED') : [];
+  medIds.forEach(id => {
+    const sel = document.getElementById('cp' + id);
+    usable.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = `${c.couponName}（满${c.thresholdAmount}减${c.discountAmount}）`;
+      sel.appendChild(opt);
+    });
+  });
+}
+
+async function buy(medId) {
+  const qty = document.getElementById('qty' + medId).value;
+  const cp = document.getElementById('cp' + medId).value;
+  const url = `/api/shop/order/create?userId=${uid()}&medicineId=${medId}&quantity=${qty}` + (cp ? `&userCouponId=${cp}` : '');
+  const body = await api(url, { method: 'POST' });
+  if (ok(body)) {
+    toast(`下单成功！订单号 ${body.data.orderNo}，实付 ￥${(body.data.totalAmount - (body.data.discountAmount || 0)).toFixed(2)}`);
+    loadMedicines(medPage); refreshBalance();
+  } else toast('下单失败：' + (body.message || '未知错误'));
+}
+
+async function exchange(medId) {
+  const qty = document.getElementById('qty' + medId).value;
+  const body = await api(`/api/shop/order/exchange?userId=${uid()}&medicineId=${medId}&quantity=${qty}`, { method: 'POST' });
+  if (ok(body)) {
+    toast(`积分兑换成功！消耗 ${body.data.pointsUsed} 积分`);
+    loadMedicines(medPage); refreshBalance();
+  } else toast('兑换失败：' + (body.message || '未知错误'));
+}
+
+/* ---------- 签到 ---------- */
+async function loadWeek() {
+  const body = await api(`/api/points/sign-in/week?userId=${uid()}`);
+  const grid = document.getElementById('weekGrid');
+  if (!ok(body)) { grid.innerHTML = `<div class="empty">加载失败: ${body.message || ''}</div>`; return; }
+  const w = body.data;
+  document.getElementById('bonus').textContent = w.fullAttendanceBonus;
+  document.getElementById('signSummary').textContent =
+    `本周已签 ${w.signedDays}/7 天${w.fullAttendance ? '（已达成全勤）' : ''}，今日可领 ${w.todayPoints} 积分`;
+  const btn = document.getElementById('signBtn');
+  btn.disabled = w.todaySigned;
+  btn.textContent = w.todaySigned ? '今日已领取' : '今日签到领积分';
+  grid.innerHTML = w.days.map(d => `
+    <div class="day ${d.signed ? 'signed' : ''}">
+      <div class="wd">${d.weekDay}</div>
+      <div class="pt">+${d.points}</div>
+      <div class="ok">${d.signed ? '✅' : ''}</div>
+    </div>`).join('');
+  // 标记今天
+  const today = new Date().toLocaleDateString('en-CA');
+  grid.querySelectorAll('.day').forEach((el, i) => {
+    if (w.days[i].date === today) el.classList.add('today');
+  });
+}
+
+async function doSignIn() {
+  const body = await api(`/api/points/sign-in?userId=${uid()}`, { method: 'POST' });
+  if (ok(body)) { toast(`签到成功，获得 ${body.data.points} 积分！`); loadWeek(); refreshBalance(); loadRecords(); }
+  else toast(body.message || '签到失败');
+}
+
+async function loadRecords() {
+  const body = await api(`/api/points/record/${uid()}`);
+  const tb = document.getElementById('recordBody');
+  if (!ok(body)) { tb.innerHTML = `<tr><td colspan="4" class="empty">加载失败</td></tr>`; return; }
+  const rows = body.data.slice(0, 20);
+  tb.innerHTML = rows.length ? rows.map(r => `
+    <tr><td>${(r.createTime || '').replace('T', ' ').slice(0, 19)}</td>
+    <td style="color:${r.points >= 0 ? '#2e9e63' : '#e04b3a'};font-weight:bold">${r.points >= 0 ? '+' : ''}${r.points}</td>
+    <td>${r.type}</td><td>${r.remark || '-'}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="empty">暂无记录</td></tr>';
+}
+
+async function refreshBalance() {
+  const body = await api(`/api/points/${uid()}`);
+  if (ok(body)) {
+    const b = body.data;
+    document.getElementById('balance').textContent = `${b.totalPoints - b.usedPoints}（累计${b.totalPoints}）`;
+  } else document.getElementById('balance').textContent = '-';
+}
+
+/* ---------- 优惠券 ---------- */
+async function loadActivities() {
+  const body = await api('/api/shop/coupon/activity');
+  const box = document.getElementById('activityList');
+  if (!ok(body)) { box.innerHTML = '<div class="empty">加载失败</div>'; return; }
+  box.innerHTML = body.data.length ? body.data.map(c => {
+    const left = c.totalCount - c.issuedCount;
+    return `<div class="coupon">
+      <div><div style="font-weight:bold">${c.name}</div>
+        <div class="cond">满 ${c.thresholdAmount} 减 ${c.discountAmount}</div>
+        <div class="limit">剩余 ${left}/${c.totalCount} 张 · 每人限领 ${c.limitPerUser} 张 · ${ (c.endTime || '').replace('T', ' ').slice(0, 10) } 截止</div></div>
+      <button class="btn btn-gold" ${left <= 0 ? 'disabled' : ''} onclick="receive(${c.id})">${left <= 0 ? '已领完' : '领取'}</button>
+    </div>`;
+  }).join('') : '<div class="empty">暂无进行中的活动</div>';
+}
+
+async function receive(couponId) {
+  const body = await api(`/api/shop/coupon/receive?userId=${uid()}&couponId=${couponId}`, { method: 'POST' });
+  if (ok(body)) { toast('领取成功！'); loadActivities(); loadMyCoupons(); }
+  else toast('领取失败：' + (body.message || '未知错误'));
+}
+
+async function loadMyCoupons() {
+  const body = await api(`/api/shop/coupon/my/${uid()}`);
+  const box = document.getElementById('myCouponList');
+  if (!ok(body)) { box.innerHTML = '<div class="empty">加载失败</div>'; return; }
+  box.innerHTML = body.data.length ? body.data.map(c => `
+    <div class="coupon ${c.status !== 'UNUSED' ? 'used' : ''}">
+      <div><div style="font-weight:bold">${c.couponName}</div>
+        <div class="cond">满 ${c.thresholdAmount} 减 ${c.discountAmount}</div>
+        <div class="limit">有效期至 ${(c.expireTime || '').replace('T', ' ').slice(0, 10)}</div></div>
+      <span class="tag tag-${c.status === 'UNUSED' ? 'PAID' : 'CANCELLED'}">${ { UNUSED: '未使用', USED: '已使用', EXPIRED: '已过期' }[c.status] || c.status }</span>
+    </div>`).join('') : '<div class="empty">还没有优惠券，去领券中心看看</div>';
+}
+
+/* ---------- 订单 ---------- */
+async function loadOrders() {
+  const body = await api(`/api/shop/order/list/${uid()}?pageNum=1&pageSize=20`);
+  const tb = document.getElementById('orderBody');
+  if (!ok(body)) { tb.innerHTML = `<tr><td colspan="10" class="empty">加载失败: ${body.message || ''}</td></tr>`; return; }
+  const rows = body.data.records || [];
+  tb.innerHTML = rows.length ? rows.map(o => `
+    <tr>
+      <td style="font-size:12px">${o.orderNo}</td>
+      <td>${o.medicineName}</td><td>${o.quantity}</td>
+      <td>￥${o.totalAmount}${o.discountAmount > 0 ? `<br><span style="color:#e04b3a;font-size:12px">-￥${o.discountAmount}</span>` : ''}</td>
+      <td>${o.discountAmount > 0 ? '￥' + o.discountAmount : '-'}</td>
+      <td>${o.pointsUsed > 0 ? o.pointsUsed : '-'}</td>
+      <td>${ { CASH: '现金', POINTS: '积分' }[o.payType] || o.payType }</td>
+      <td><span class="tag tag-${o.status}">${ { PAID: '已支付', CANCELLED: '已取消', PENDING: '待支付' }[o.status] || o.status }</span></td>
+      <td style="font-size:12px">${(o.createTime || '').replace('T', ' ').slice(0, 19)}</td>
+      <td>${o.status === 'PAID' ? `<button class="btn btn-danger" onclick="cancelOrder(${o.id})">取消</button>` : ''}</td>
+    </tr>`).join('') : '<tr><td colspan="10" class="empty">暂无订单，去商城逛逛吧</td></tr>';
+}
+
+async function cancelOrder(id) {
+  if (!confirm('确认取消该订单？现金订单会退回优惠券，积分订单会退回积分。')) return;
+  const body = await api(`/api/shop/order/cancel/${id}`, { method: 'POST' });
+  if (ok(body)) { toast('订单已取消'); loadOrders(); refreshBalance(); }
+  else toast('取消失败：' + (body.message || '未知错误'));
+}
+
+/* ---------- 汇总 ---------- */
+function refreshAll() {
+  if (!isLogged()) { showAuth(); return; }
+  refreshBalance();
+  loadMedicines(1);
+  loadWeek(); loadRecords();
+  loadActivities(); loadMyCoupons();
+  loadOrders();
+}
+
+// 启动：有 token 直接进，无 token 弹登录
+if (isLogged()) { hideAuth(); refreshAll(); } else { showAuth(); }
+</script>
+</body>
+</html>

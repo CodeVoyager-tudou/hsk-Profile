@@ -1,0 +1,16 @@
+# =============================================================================
+# Nacos 公共配置 · 服务间内部令牌（points / shop）
+# group: DEFAULT_GROUP        format: YAML
+# 来源：docs/Nacos配置迁移方案.md §7.5
+#   points 侧：InternalApiSecurityConfig 校验 /points/add|deduct|refund、/account/deduct|refund
+#   shop 侧：FeignInternalTokenConfig 出站携带、ShopOrderController 支付回调校验
+# 只给"确实校验这个令牌"的两个服务导入（最小权限）：gateway / user 不导入本文件。
+#
+# 一致性要求：两端必须是同一个值 —— 放公共配置后结构上只可能有一个值。
+# 缺失/不一致的后果是 fail-closed 403（不是内部接口裸奔）：
+#   InternalApiSecurityConfig 在令牌为空时一律拒绝，表现为"shop 调 points 加减分全部 403"。
+# 故本项必须当成功能性验证项，不只是配置检查项。
+# =============================================================================
+
+chronic:
+  internal-token: ${INTERNAL_TOKEN}

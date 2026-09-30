@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>慢性病管理智能助手</title>
+    <!-- marked.js：渲染回答中的 Markdown（小标题、列表、表格） -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        :root {
+            --primary: #2e7d6b;
+            --primary-dark: #23604f;
+            --bg: #f4f7f6;
+            --border: #dde5e2;
+            --text: #2f3b38;
+            --muted: #8a9994;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+            background: var(--bg); color: var(--text);
+            display: flex; flex-direction: column; height: 100vh;
+        }
+        header {
+            background: var(--primary); color: #fff;
+            padding: 14px 24px; display: flex; align-items: center; gap: 12px;
+            box-shadow: 0 2px 6px rgba(0,0,0,.12);
+        }
+        header h1 { font-size: 18px; font-weight: 600; }
+        header .sub { font-size: 12px; opacity: .85; }
+        .new-session {
+            margin-left: auto; background: rgba(255,255,255,.15); color: #fff;
+            border: 1px solid rgba(255,255,255,.4); border-radius: 6px;
+            padding: 6px 14px; cursor: pointer; font-size: 13px;
+        }
+        .new-session:hover { background: rgba(255,255,255,.28); }
+        .chat-wrap {
+            flex: 1; max-width: 860px; width: 100%; margin: 0 auto;
+            display: flex; flex-direction: column; padding: 16px; gap: 12px; overflow: hidden;
+        }
+        .messages { flex: 1; overflow-y: auto; padding-right: 4px; scroll-behavior: smooth; }
+        .msg { display: flex; margin-bottom: 14px; }
+        .msg .bubble {
+            max-width: 82%; padding: 10px 14px; border-radius: 10px;
+            line-height: 1.7; font-size: 14.5px; word-break: break-word;
+        }
+        .msg.user { justify-content: flex-end; }
+        .msg.user .bubble { background: var(--primary); color: #fff; border-bottom-right-radius: 2px; }
+        .msg.bot .bubble { background: #fff; border: 1px solid var(--border); border-bottom-left-radius: 2px; }
+        .msg.bot .bubble h1, .msg.bot .bubble h2, .msg.bot .bubble h3 { margin: 8px 0 4px; font-size: 15px; }
+        .msg.bot .bubble p { margin: 4px 0; }
+        .msg.bot .bubble ul, .msg.bot .bubble ol { padding-left: 20px; margin: 4px 0; }
+        .msg.bot .bubble hr { border: none; border-top: 1px dashed var(--border); margin: 8px 0; }
+        .typing { display: inline-flex; gap: 4px; padding: 4px 2px; }
+        .typing span {
+            width: 7px; height: 7px; border-radius: 50%; background: var(--muted);
+            animation: bounce 1s infinite;
+        }
+        .typing span:nth-child(2) { animation-delay: .2s; }
+        .typing span:nth-child(3) { animation-delay: .4s; }
+        @keyframes bounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+        .input-bar { display: flex; gap: 10px; }
+        .input-bar textarea {
+            flex: 1; resize: none; height: 48px; max-height: 140px;
+            padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px;
+            font-size: 14.5px; font-family: inherit; outline: none; background: #fff;
+        }
+        .input-bar textarea:focus { border-color: var(--primary); }
+        .input-bar button {
+            background: var(--primary); color: #fff; border: none; border-radius: 8px;
+            padding: 0 26px; font-size: 15px; cursor: pointer;
+        }
+        .input-bar button:hover { background: var(--primary-dark); }
+        .input-bar button:disabled { background: var(--muted); cursor: not-allowed; }
+        .input-bar button.stop-btn { background: #c0392b; display: none; }
+        .input-bar button.stop-btn:hover { background: #a93226; }
+        .tip { font-size: 12px; color: var(--muted); text-align: center; }
+    </style>
+</head>
+<body>
+<header>
+    <h1>慢性病管理智能助手</h1>
+    <span class="sub">疾病科普 · 用药咨询 · 饮食运动 · 指标解读 · 风险预警</span>
+    <button class="new-session" id="newSessionBtn">新会话</button>
+</header>
+
+<div class="chat-wrap">
+    <div class="messages" id="messages"></div>
+    <div class="input-bar">
+        <textarea id="input" placeholder="请输入您的健康问题，例如：高血压的诊断标准是多少？（Enter 发送，Shift+Enter 换行）"></textarea>
+        <button id="sendBtn">发送</button>
+        <button id="stopBtn" class="stop-btn">停止</button>
+    </div>
+    <div class="tip">本系统内容仅供参考，不能替代专业医疗建议；如有不适请及时就医。</div>
+</div>
+
+<script>
+    const messagesEl = document.getElementById('messages');
+    const inputEl = document.getElementById('input');
+    const sendBtn = document.getElementById('sendBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    let sessionId = null;
+    let busy = false;
+    let activeWs = null;
+    let cancelled = false;
+    let stopResolve = null;
+
+    // 页面初始化：创建会话 + 欢迎语
+    document.addEventListener('DOMContentLoaded', async () => {
+        await createSession();
+        addBotMessage('你好！我是慢性病管理助手，可以为你提供疾病科普、用药咨询、饮食运动建议、指标解读等服务。请问有什么可以帮你的？');
+        sendBtn.addEventListener('click', send);
+        inputEl.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+        });
+        document.getElementById('newSessionBtn').addEventListener('click', async () => {
+            await createSession();
+            messagesEl.innerHTML = '';
+            addBotMessage('已开启新会话，请问有什么可以帮你的？');
+        });
+        stopBtn.addEventListener('click', () => {
+            cancelled = true;
+            if (activeWs) { activeWs.close(); }
+            if (stopResolve) { stopResolve(); stopResolve = null; }
+        });
+    });
+
+    async function createSession() {
+        try {
+            const resp = await fetch('/api/create_session', { method: 'POST' });
+            const data = await resp.json();
+            sessionId = data.session_id;
+        } catch (e) {
+            console.error('创建会话失败:', e);
+            sessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+        }
+    }
+
+    function addUserMessage(text) {
+        const msg = document.createElement('div');
+        msg.className = 'msg user';
+        msg.innerHTML = `<div class="bubble"></div>`;
+        msg.querySelector('.bubble').textContent = text;
+        messagesEl.appendChild(msg);
+        scrollBottom();
+    }
+
+    // 返回答案气泡元素（后续流式追加内容）
+    function addBotMessage(text) {
+        const msg = document.createElement('div');
+        msg.className = 'msg bot';
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+        bubble.innerHTML = text ? marked.parse(text) : '';
+        msg.appendChild(bubble);
+        messagesEl.appendChild(msg);
+        scrollBottom();
+        return bubble;
+    }
+
+    function scrollBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
+
+    async function send() {
+        const query = inputEl.value.trim();
+        if (!query || busy) return;
+        busy = true;
+        cancelled = false;
+        sendBtn.style.display = 'none';
+        stopBtn.style.display = 'inline-block';
+        inputEl.value = '';
+        addUserMessage(query);
+
+        let bubble = null;
+
+        try {
+            await streamViaWebSocket(query, (text) => {
+                if (!bubble) {
+                    bubble = addBotMessage('');
+                }
+                bubble.innerHTML = marked.parse(text);
+                scrollBottom();
+            });
+        } catch (e) {
+            console.warn('WebSocket 失败，回退 HTTP:', e);
+            if (cancelled) return;
+            try {
+                await queryViaHttp(query, (text) => {
+                    if (!bubble) { bubble = addBotMessage(''); }
+                    bubble.innerHTML = marked.parse(text);
+                    scrollBottom();
+                });
+            } catch (e2) {
+                if (!bubble) { bubble = addBotMessage(''); }
+                bubble.innerHTML = marked.parse('抱歉，系统暂时无法响应，请稍后重试。');
+            }
+        }
+        stopBtn.style.display = 'none';
+        sendBtn.style.display = 'inline-block';
+        busy = false;
+        inputEl.focus();
+    }
+
+    function streamViaWebSocket(query, onToken) {
+        return new Promise((resolve, reject) => {
+            const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${wsProto}//${location.host}/api/stream`);
+            activeWs = ws;
+            stopResolve = resolve;
+            let acc = '';
+            const timer = setTimeout(() => { ws.close(); reject(new Error('连接超时')); }, 8000);
+
+            ws.onopen = () => {
+                clearTimeout(timer);
+                ws.send(JSON.stringify({ query, session_id: sessionId }));
+            };
+            ws.onmessage = event => {
+                const data = JSON.parse(event.data);
+                if (data.type === 'token') {
+                    acc += data.token;
+                    onToken(acc);
+                } else if (data.type === 'end') {
+                    ws.close();
+                } else if (data.type === 'error') {
+                    ws.close();
+                    reject(new Error(data.message || '流式响应错误'));
+                }
+            };
+            ws.onerror = () => { clearTimeout(timer); reject(new Error('WebSocket 错误')); };
+            ws.onclose = () => {
+                activeWs = null;
+                stopResolve = null;
+                if (cancelled && acc) {
+                    acc += '\n\n*（已停止生成）*';
+                    onToken(acc);
+                }
+                resolve();
+            };
+        });
+    }
+
+    // 兜底：HTTP 一次性返回
+    async function queryViaHttp(query, onToken) {
+        const resp = await fetch('/api/query', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, session_id: sessionId })
+        });
+        if (!resp.ok) throw new Error('HTTP 查询失败');
+        const data = await resp.json();
+        onToken(data.answer);
+    }
+</script>
+</body>
+</html>

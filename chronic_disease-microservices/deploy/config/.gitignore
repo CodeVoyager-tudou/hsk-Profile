@@ -1,0 +1,4 @@
+# 生产真实配置不入库（含数据库口令/JWT 密钥/内部令牌），仅保留本说明；
+# 部署时把对应服务目录整个拷到 jar 同级目录（见 README.md）。
+**/application.yml
+**/application-*.yml

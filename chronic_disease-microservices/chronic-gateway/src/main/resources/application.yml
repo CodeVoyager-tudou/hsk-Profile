@@ -1,0 +1,49 @@
+server:
+  port: 8090
+
+spring:
+  application:
+    name: chronic-gateway
+  # 强制 Reactive（Netty）：common 模块传递的 spring-boot-starter-web 会让启动推断误判为
+  # Servlet 应用，Spring Cloud Gateway 在 Servlet 容器里无法工作（jar 模式首启即崩，IDE 内同理）
+  # —— 属于「配置中心不可达时也必须成立」的启动护栏，故留在本地，不进 Nacos。
+  main:
+    web-application-type: reactive
+  config:
+    # 公共在前、专属在后（更具体的配置排在后面）。
+    # 本方案每个键只有一个归属，不依赖「本地 vs 导入」的相对优先级；此处顺序只是约定。
+    import:
+      # 本地密钥（JWT/内部令牌/DB/Redis/OSS 的 ${ENV} 占位符）：IDE 直接启动时进程环境变量
+      # 往往停在「IntelliJ 启动那一刻」，后加的系统变量它看不到，所以把 .env.local 也当成
+      # 一个配置源读进来（它就是 properties 格式的 KEY=VALUE）。候选路径覆盖几种工作目录
+      #（IDE Run Configuration 可能是模块目录 / 微服务根 / 仓库根）；文件不存在时
+      # optional 静默跳过，部署机上仍按环境变量注入，两种方式并存不冲突。
+      - optional:file:../.env.local[.properties]
+      - optional:file:./.env.local[.properties]
+      - optional:file:../chronic_disease-microservices/.env.local[.properties]
+      - optional:nacos:chronic-common.yaml
+      - optional:nacos:chronic-common-redis.yaml
+      - optional:nacos:chronic-gateway.yaml
+  # common 传递的 druid/mybatis-plus 会触发 DataSource 自动配置——网关不连库，显式排除。
+  # 同样是启动护栏：放 Nacos 后若配置中心不可达，网关会被 DataSource 自动配置拖死。
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - com.alibaba.druid.spring.boot3.autoconfigure.DruidDataSourceAutoConfigure
+      - com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:192.168.100.128:8848}
+        # 生产开启 Nacos 鉴权后填写（未开启时留空即可）
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+        # 环境隔离靠 namespace（dev/test/prod 各一个），dataId 保持不变；留空=public
+        namespace: ${NACOS_NAMESPACE:}
+      config:
+        server-addr: ${NACOS_ADDR:192.168.100.128:8848}
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+        namespace: ${NACOS_NAMESPACE:}
+        # 与下面 import 里显式写出的 .yaml 后缀一致（沿用既有写法）
+        file-extension: yaml

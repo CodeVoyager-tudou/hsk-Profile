@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    name: 单测（不依赖模型/中间件的用例）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 源码 BOM 守卫
+        run: python3 scripts/check-utf8-bom.py .
+
+      - name: 安装轻量依赖（不装 torch/OCR/向量库）
+        run: pip install pytest
+
+      - name: 跑纯逻辑用例
+        run: python -m pytest -q test_security.py test_preprocess.py test_router_keywords.py

@@ -1,0 +1,24 @@
+﻿id,question,expected_source,passed,detail,elapsed_s
+1,高血压的诊断标准是多少？,disease,PASS,"来源['disease', 'medication'] | 关键词覆盖100% | 回答覆盖100%",42.20
+2,高血压有哪些常见症状？,disease,PASS,"来源['disease', 'risk'] | 关键词覆盖100% | 回答覆盖100%",23.57
+3,什么是原发性高血压？,disease,PASS,"来源['disease', 'medication'] | 关键词覆盖100% | 回答覆盖100%",24.63
+4,高血压的危害有哪些？,disease,PASS,"来源['disease', 'risk'] | 关键词覆盖100% | 回答覆盖100%",29.47
+5,血压多少需要开始吃降压药？,medication,PASS,"来源['medication', 'disease'] | 关键词覆盖100% | 回答覆盖100%",24.05
+6,常用降压药有哪几大类？,medication,PASS,"来源['disease', 'medication'] | 关键词覆盖62% | 回答覆盖75%",36.77
+7,降压药能自己停吗？,medication,PASS,"来源['medication', 'lifestyle'] | 关键词覆盖100% | 回答覆盖100%",25.84
+8,高血压患者每天吃多少盐合适？,lifestyle,PASS,"来源['lifestyle', 'lifestyle'] | 关键词覆盖100% | 回答覆盖100%",27.65
+9,高血压患者适合什么运动？,lifestyle,PASS,"来源['lifestyle', 'disease'] | 关键词覆盖100% | 回答覆盖100%",29.10
+10,高血压患者饮食上要注意什么？,lifestyle,PASS,"来源['lifestyle', 'disease'] | 关键词覆盖100% | 回答覆盖100%",36.12
+11,空腹血糖的正常范围是多少？,lab,PASS,"来源['lab', 'disease'] | 关键词覆盖100% | 回答覆盖100%",21.85
+12,低密度脂蛋白偏高说明什么？,lab,PASS,"来源['lab', 'lab'] | 关键词覆盖100% | 回答覆盖100%",72.30
+13,血钾偏低有什么风险？,lab,PASS,"来源['lab', 'disease'] | 关键词覆盖100% | 回答覆盖100%",32.97
+14,高血压患者出现哪些情况要马上去医院？,risk,PASS,"来源['risk', 'risk'] | 关键词覆盖100% | 回答覆盖100%",37.33
+15,血压突然升得很高怎么办？,risk,PASS,"来源['risk', 'risk'] | 关键词覆盖100% | 回答覆盖100%",65.20
+16,突然胸痛呼吸困难怎么办,emergency,PASS,⚠️ 如出现胸痛、呼吸困难、意识模糊等紧急情况，请立即拨打120或前往急诊。,0.00
+17,我老爸今天晕倒了怎么办,emergency,PASS,⚠️ 如出现胸痛、呼吸困难、意识模糊等紧急情况，请立即拨打120或前往急诊。,0.00
+18,你好,greeting,PASS,你好！我是慢性病管理助手，可以为你提供疾病科普、用药咨询、饮食运动建议、指标解读等服务。请问有什么可以帮你的？,0.00
+19,家庭自测血压多少算高血压？,disease,PASS,"来源['medication', 'disease'] | 关键词覆盖100% | 回答覆盖0%",32.65
+20,糖尿病的诊断标准是什么？,disease,PASS,"来源['disease', 'disease'] | 关键词覆盖100% | 回答覆盖100%",39.57
+21,白细胞、血红蛋白、血小板的参考区间是多少？,lab,PASS,"来源['lab', 'lab'] | 关键词覆盖100% | 回答覆盖100%",28.73
+22,膳食指南建议成年人每天摄入多少蔬菜和奶及奶制品？,lifestyle,PASS,"来源['lifestyle', 'lifestyle'] | 关键词覆盖100% | 回答覆盖50%",26.36
+23,膳食指南建议成人健康体重的BMI范围是多少？,lifestyle,PASS,"来源['lifestyle', 'disease'] | 关键词覆盖100% | 回答覆盖100%",23.86

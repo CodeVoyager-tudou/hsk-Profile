@@ -1,0 +1,14 @@
+services:
+  chronic-ai-nginx:
+    image: nginx:1.24-alpine
+    container_name: chronic-ai-nginx
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      # AI 上游地址；默认指向开发机（VMnet8 宿主 192.168.100.1）。
+      # Python AI 也部署进 VM 时改成同一网络里的服务名，如 chronic-ai:8001
+      AI_UPSTREAM: ${AI_UPSTREAM:-192.168.100.1:8001}
+    volumes:
+      # 模板目录交给官方镜像 entrypoint 做 envsubst，产出 conf.d/ai-proxy.conf
+      - ./templates:/etc/nginx/templates:ro

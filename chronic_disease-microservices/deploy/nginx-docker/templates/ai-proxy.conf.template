@@ -1,0 +1,29 @@
+# AI 服务入口（9000）：由 nginx 官方镜像的 entrypoint 做 envsubst
+#   /etc/nginx/templates/*.template  ->  /etc/nginx/conf.d/*.conf
+# 上游地址由环境变量 AI_UPSTREAM 提供（docker-compose 的 environment 或 docker run -e）
+#   - Python AI 在开发机上：AI_UPSTREAM=192.168.100.1:8001（VMnet8 宿主地址）
+#   - Python AI 也在 VM 内：AI_UPSTREAM=chronic-ai:8001（同一 docker network 的服务名）
+
+upstream chronic_ai {
+    server ${AI_UPSTREAM} max_fails=3 fail_timeout=10s;
+    keepalive 32;
+}
+
+server {
+    listen      9000;
+    server_name _;
+
+    location / {
+        proxy_pass http://chronic_ai;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        # AI 流式为 NDJSON/SSE：必须关闭缓冲，token 才能即时下发
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}

@@ -1,0 +1,32 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: chronic-user-service
+  config:
+    import:
+      # 本地密钥（见 .env.local）：IDE 直接启动时进程环境变量可能停在 IntelliJ 启动那一刻，
+      # 后加的系统变量看不到，所以把 .env.local 也当一个配置源读进来（properties 格式）。
+      # 候选路径覆盖几种工作目录；文件不存在时 optional 静默跳过，部署机仍走环境变量注入。
+      - optional:file:../.env.local[.properties]
+      - optional:file:./.env.local[.properties]
+      - optional:file:../chronic_disease-microservices/.env.local[.properties]
+      - optional:nacos:chronic-common.yaml
+      - optional:nacos:chronic-common-service.yaml
+      - optional:nacos:chronic-common-redis.yaml
+      - optional:nacos:chronic-common-oss.yaml
+      - optional:nacos:chronic-user-service.yaml
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:192.168.100.128:8848}
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+        namespace: ${NACOS_NAMESPACE:}
+      config:
+        server-addr: ${NACOS_ADDR:192.168.100.128:8848}
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+        namespace: ${NACOS_NAMESPACE:}
+        file-extension: yaml

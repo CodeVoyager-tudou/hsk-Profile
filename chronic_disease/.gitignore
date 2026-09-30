@@ -1,0 +1,30 @@
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# ---------- 本地配置与日志（含内网地址/口令，不入库）----------
+config.ini
+logs/
+*.log
+
+# ---------- IDE / 工具运行产物 ----------
+.idea/
+*.iml
+.mimosa/
+.zcode/
+
+# ---------- OCR 结果缓存（按 文件md5/页码 缓存识别文本，可从原始 PDF 重新生成）----------
+.cache/
+
+# ---------- 知识源：原始 PDF 体积过大（约 394MB），仅保留提取出的 md 文本 ----------
+# 下载清单见 document_download_list.md
+data/**/*.pdf
+data/**/*.docx
+data/**/*.doc
+data/**/*.ppt
+data/**/*.pptx
