@@ -167,6 +167,10 @@ class NacosPromptPoller:
             params["tenant"] = self.namespace
         resp = requests.get(f"{self.base}/nacos/v1/cs/configs",
                             params=params, timeout=5)
+        if resp.status_code == 404:
+            # dataId 尚未发布过：Nacos 对不存在的配置返回 404，
+            # 静默视为「还没有」，等控制台导入后下一轮自然拉到
+            return ""
         if resp.status_code == 403:
             # token 失效：清空登录态，下一轮重新登录
             self._token = None
