@@ -11,10 +11,9 @@
          （上限 3 路），降低 LLM 偶发误路由导致本源缺席的概率。
 """
 import json
-from openai import OpenAI
 from base.logger import logger
 from core.prompts import ChronicDiseasePrompts
-from core.llm_config import LLM_MODEL, LLM_API_KEY, LLM_BASE_URL, LLM_TIMEOUT
+from core.llm_config import LLM_MODEL, make_openai_client
 from core.router_keywords import keyword_routes
 
 
@@ -33,11 +32,7 @@ class RouterAgent:
         """创建 LLM client（带超时上界）并初始化专家键到展示名的映射"""
         # router 是**每个请求必经**的一步，一旦这里不设超时，
         # 后端卡住时整个请求会永久挂起并占住工作线程。现在统一在 client 上设上界。
-        self.client = OpenAI(
-            api_key=LLM_API_KEY,
-            base_url=LLM_BASE_URL,
-            timeout=LLM_TIMEOUT
-        )
+        self.client = make_openai_client()
 
         # 专家键 -> 展示名。图里 Send 派发只用键，输出的【】分段前缀用展示名
         self.agent_mapping = {
@@ -92,7 +87,9 @@ class RouterAgent:
             logger.info(f"路由分析结果: {result}（关键词并集 {supplement}）")
             return result[:3]
         except Exception as e:
-            logger.error(f"路由分析失败: {e}")
+            # Connection error 这类外层消息不带底层原因（httpx 的真实报错在 __cause__ 里），
+            # 不展开就永远排查不了「Ollama 明明在跑却连不上」这类问题
+            logger.error(f"路由分析失败: {e!r}（底层原因: {e.__cause__!r}）")
             # 关键词兜底（替代原来的无条件 disease）：命中则分派到对应专家，未命中才落 disease。
             # 返回所有命中专家（上限 3 路），与 LLM 多路路由一致，复合问题可并行覆盖多个源。
             kw_fallback = keyword_routes(query, min_score=1)[:3]

@@ -6,6 +6,9 @@
 """
 from base.config import Config
 
+import httpx
+import openai
+
 _root = Config()
 _chronic = Config()
 
@@ -38,3 +41,20 @@ LLM_BASE_URL = _chronic.config.get("llm", "base_url",
 # 这是**兜底值**：单个调用仍可显式传 timeout 覆盖它。
 # ============================================================================
 LLM_TIMEOUT = _chronic.config.getint("llm", "timeout", fallback=300)
+
+
+def make_openai_client() -> "openai.OpenAI":
+    """路由器 / 专家 / 整合器统一用这里构造 client，换模型换地址只改这一处。
+
+    http_client 固定 trust_env=False——base_url 是 config.ini 写死的本机/内网服务
+    （Ollama），绝不该走代理。Windows 开着「系统代理」时，OpenAI SDK 底层的 httpx
+    会读注册表代理设置，但它不认 ProxyOverride 的 <local> 例外规则，
+    连 localhost 的请求也会被塞进代理，表现为 502 / 连接被重置
+    （curl、ollama CLI 不读注册表所以「明明能通」，极具迷惑性，2026-09-30 实踩）。
+    """
+    return openai.OpenAI(
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL,
+        timeout=LLM_TIMEOUT,
+        http_client=httpx.Client(trust_env=False),
+    )

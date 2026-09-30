@@ -9,10 +9,9 @@
              --chat.completions--> 答案（非流式 generate_text / 流式 generate_response）
 """
 from abc import ABC, abstractmethod
-from openai import OpenAI
 from base.logger import logger
 from core.prompts import ChronicDiseasePrompts
-from core.llm_config import LLM_MODEL, LLM_API_KEY, LLM_BASE_URL, LLM_TIMEOUT
+from core.llm_config import LLM_MODEL, make_openai_client
 
 
 def format_knowledge_header(idx: int, doc) -> str:
@@ -43,11 +42,7 @@ class BaseAgent(ABC):
         self.role = role
         # 在 client 上统一设超时上界（兜底）。
         # 各调用点仍显式传 timeout=LLM_TIMEOUT，这里是防止将来新增调用时漏传。
-        self.client = OpenAI(
-            api_key=LLM_API_KEY,
-            base_url=LLM_BASE_URL,
-            timeout=LLM_TIMEOUT
-        )
+        self.client = make_openai_client()
         self.vector_store = None
 
     def set_vector_store(self, vector_store):
@@ -138,7 +133,7 @@ class BaseAgent(ABC):
             )
             return completion.choices[0].message.content
         except Exception as e:
-            logger.error(f"{self.name} 调用失败: {e}")
+            logger.error(f"{self.name} 调用失败: {e!r}（底层原因: {e.__cause__!r}）")
             return "抱歉，系统暂时无法处理您的问题。"
 
     def generate_response(self, question: str, stream: bool = False,
@@ -165,5 +160,5 @@ class BaseAgent(ABC):
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
         except Exception as e:
-            logger.error(f"{self.name} 调用失败: {e}")
+            logger.error(f"{self.name} 调用失败: {e!r}（底层原因: {e.__cause__!r}）")
             yield "抱歉，系统暂时无法处理您的问题。"

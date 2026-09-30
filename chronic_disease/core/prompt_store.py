@@ -32,6 +32,11 @@ import yaml
 from base.config import Config
 from base.logger import logger
 
+# Nacos 是 config.ini 写死的内网地址，绝不走系统代理：
+# requests 底层同样会读 Windows「系统代理」，代理一抖动热更新就莫名失败
+_session = requests.Session()
+_session.trust_env = False
+
 
 def _extract_fields(template: str) -> set:
     """提取模板的占位符字段集合；模板有大括号没闭合时抛 ValueError。

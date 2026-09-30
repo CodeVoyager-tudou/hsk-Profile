@@ -11,7 +11,6 @@
     query/query_stream → graph.invoke/stream → route 节点（选科室，最多 3 路）
     → Send 并行派发 expert 节点（各自检索知识库 + 调大模型）→ synthesize 整合 → END
 """
-from openai import OpenAI
 from base.logger import logger
 from agents.router_agent import RouterAgent
 from agents.disease_agent import DiseaseAgent
@@ -23,7 +22,7 @@ from agents.order_agent import OrderAgent
 from agents.mall_agent import MallAgent
 from core.session import format_history
 from core.prompts import ChronicDiseasePrompts
-from core.llm_config import LLM_MODEL, LLM_API_KEY, LLM_BASE_URL, LLM_TIMEOUT
+from core.llm_config import LLM_MODEL, make_openai_client
 from core.graph import (
     DEFAULT_ANSWER,
     build_chronic_graph,
@@ -107,11 +106,7 @@ class ChronicDiseaseCoordinator:
                 agent.set_vector_store(vector_store)
 
         # 整合步骤也要有超时上界，避免后端卡死时请求永久挂起
-        self.client = OpenAI(
-            api_key=LLM_API_KEY,
-            base_url=LLM_BASE_URL,
-            timeout=LLM_TIMEOUT
-        )
+        self.client = make_openai_client()
 
         # LangGraph 检查点器：thread_id=会话ID 时同一会话的图状态跨请求保留（进程内）。
         # 会话正文/摘要的持久化由 ChatSessionManager(PostgreSQL) 负责；此处 InMemorySaver
