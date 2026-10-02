@@ -40,9 +40,10 @@ public class PointsCompensateJob {
     /** 每 5 分钟一轮，单轮最多 100 单；只处理支付成功 5 分钟后的订单（避开主流程刚失败、Feign 尚在恢复的窗口） */
     @Scheduled(fixedDelay = 300_000, initialDelay = 60_000)
     public void compensateOrderPoints() {
+        // 不限定 payType：余额/现金（秒杀）单支付成功都发积分，只扫 CASH 会漏掉余额单的补发；
+        // 积分单（POINTS）pointsEarned=0，被下面的 gt(pointsEarned, 0) 天然排除
         List<ShopOrder> pending = shopOrderMapper.selectList(new LambdaQueryWrapper<ShopOrder>()
                 .eq(ShopOrder::getStatus, "PAID")
-                .eq(ShopOrder::getPayType, "CASH")
                 .eq(ShopOrder::getPointsStatus, 0)
                 .gt(ShopOrder::getPointsEarned, 0)
                 .lt(ShopOrder::getCreateTime, LocalDateTime.now().minusMinutes(5))

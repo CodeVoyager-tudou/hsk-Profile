@@ -23,6 +23,13 @@ public class ShopOrder implements Serializable {
 
     private Long userId;
 
+    /**
+     * 订单类型: SINGLE-单商品直购 CART-购物车合并结算。
+     * CART 单的药品信息全在明细表 shop_order_item 里，主表的 medicine_id 等单商品字段
+     * 只作可读兜底（medicineName 存"购物车结算(N件)"摘要）。
+     */
+    private String orderType;
+
     private Long medicineId;
 
     private String medicineName;
@@ -80,4 +87,11 @@ public class ShopOrder implements Serializable {
      */
     @TableField(exist = false)
     private String medicineImage;
+
+    /**
+     * 订单明细（非表字段）：查询接口按 order_id 回填。
+     * CART（购物车）单前端展示以此为准；SINGLE 单也有一行，展示逻辑可以统一。
+     */
+    @TableField(exist = false)
+    private java.util.List<ShopOrderItem> items;
 }

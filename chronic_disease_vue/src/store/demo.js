@@ -155,7 +155,11 @@ const state = reactive({
   // 页面据此显示「演示」标记，避免用户把 mock 卡片当成真实订单去操作
   isMock: false,
   accountRecords: [],     // 余额流水
-  payMethod: 'CASH',      // 详情页选择的支付方式：CASH-现金(模拟渠道) / BALANCE-余额
+  payMethod: 'BALANCE',   // 详情页支付方式：BALANCE-余额支付 / POINTS-积分支付（现金通道仅秒杀单保留）
+
+  // 购物车（后端持久化：cart_item 表，一用户一药品一行）
+  cartItems: [],          // 后端返回的 CartItemVO 列表（含现价/库存/invalid 标记）
+  cartLoading: false,
 
   // 秒杀（Redis+Lua 预扣 + MQ 排队落库）
   seckillActivities: [],
@@ -614,7 +618,8 @@ async function buy(medId) {
   try {
     const qty = state.detailQty
     const cp = state.detailCoupon
-    const payType = state.payMethod || 'CASH'
+    // 普通购买只有余额一条支付链路（现金通道仅秒杀单保留；积分支付走 exchange 独立链路）
+    const payType = 'BALANCE'
     const url = `/api/shop/order/create?userId=${state.userId}&medicineId=${medId}&quantity=${qty}&payType=${payType}` + (cp ? `&userCouponId=${cp}` : '')
     // 幂等键（J-02）：一次「点击购买」生成一个 requestId 并随请求发出。
     // 后端以 (user_id, request_id) 建唯一索引，因此同一用户重复提交只会产生一张订单，
@@ -623,14 +628,13 @@ async function buy(medId) {
     try {
       const body = await api(url, { method: 'POST', headers: { 'X-Request-Id': requestId } })
       if (ok(body)) {
-        // 现金单 + 渠道未自动确认（PAY_MOCK_AUTO_CONFIRM=false）时停在 PENDING：
-        // 不回首页，把控制权交给详情页跳转收银台，演示「确认支付 / 返回 / 超时自动关单」
-        if (payType === 'CASH' && body.data.status === 'PENDING') {
+        // 统一收银台模型：余额单建单后 PENDING（此刻不扣钱），
+        // 交由详情页跳收银台「确认支付 / 超时自动关单」
+        if (body.data.status === 'PENDING') {
           toast(`订单已创建：${body.data.orderNo}，请在 30 分钟内完成支付，超时将自动取消`)
           return { ok: true, pending: true, orderId: body.data.id, orderNo: body.data.orderNo }
         }
-        const payNote = payType === 'BALANCE' ? '（余额支付）' : ''
-        toast(`下单成功！订单号 ${body.data.orderNo}，实付 ￥${(body.data.totalAmount - (body.data.discountAmount || 0)).toFixed(2)}${payNote}`)
+        toast(`下单成功！订单号 ${body.data.orderNo}，实付 ￥${(body.data.totalAmount - (body.data.discountAmount || 0)).toFixed(2)}（余额支付）`)
         loadBalance()
         loadAccount()
         goBack('home')
@@ -666,13 +670,21 @@ async function buy(medId) {
 
 async function exchange(medId) {
   const qty = state.detailQty
+  // 不在前端预检积分是否充足：本地积分可能是陈旧快照，预检反而可能拦下本可成功的兑换。
+  // 积分不足由后端在确认支付时如实返回（"积分余额不足"），前端原样透出即可。
   const med = state.currentMed && String(state.currentMed.id) === String(medId)
     ? state.currentMed
     : state.medicines.find((m) => String(m.id) === String(medId))
+  // 仅演示兜底（后端不可达）用它做本地校验；真实链路不预检，积分是否够由后端确认支付时判定
   const cost = med && med.pointsPrice > 0 ? med.pointsPrice * qty : 0
   try {
     const body = await api(`/api/shop/order/exchange?userId=${state.userId}&medicineId=${medId}&quantity=${qty}`, { method: 'POST' })
     if (ok(body)) {
+      // 统一收银台模型：积分单 PENDING，交由详情页跳收银台确认支付（此刻才真正扣分）
+      if (body.data.status === 'PENDING') {
+        toast(`订单已创建：${body.data.orderNo}，需 ${body.data.pointsUsed} 积分，请在 30 分钟内确认支付`)
+        return { ok: true, pending: true, orderId: body.data.id, orderNo: body.data.orderNo }
+      }
       toast(`积分兑换成功！消耗 ${body.data.pointsUsed} 积分`)
       loadBalance()
       goBack('home')
@@ -696,6 +708,129 @@ async function exchange(medId) {
       toast(`积分兑换成功（演示）消耗 ${cost} 积分`)
       goBack('home')
     }
+  }
+}
+
+// ===== 购物车 =====
+// 与 buy() 同一套纪律：在途防双击（后端幂等键挡"重试"，这里挡"连点"）。
+let cartBusy = false
+let checkingOut = false
+
+async function addToCart(medId, qty) {
+  if (cartBusy) return
+  cartBusy = true
+  try {
+    const body = await api(`/api/shop/cart/items?medicineId=${medId}&quantity=${qty}`, { method: 'POST' })
+    if (ok(body)) {
+      toast('已加入购物车')
+      loadCart()
+    } else {
+      toast('加购失败：' + (body.message || '未知错误'))
+    }
+  } catch (e) {
+    if (!demoFallbackAllowed()) return
+    toast('已加入购物车（演示）')
+  } finally {
+    cartBusy = false
+  }
+}
+
+async function loadCart() {
+  // 静默加载：失败不打断页面（购物车是附属功能，别用弹窗轰炸），列表保持空态即可
+  state.cartLoading = true
+  try {
+    const body = await api('/api/shop/cart')
+    state.cartItems = ok(body) ? body.data : []
+  } catch (e) {
+    state.cartItems = []
+  } finally {
+    state.cartLoading = false
+  }
+}
+
+async function updateCartItem(itemId, qty) {
+  if (cartBusy) return
+  cartBusy = true
+  try {
+    const body = await api(`/api/shop/cart/items/${itemId}?quantity=${qty}`, { method: 'PUT' })
+    if (ok(body)) loadCart()
+    else toast('修改失败：' + (body.message || '未知错误'))
+  } catch (e) {
+    toast('网络异常，修改失败')
+  } finally {
+    cartBusy = false
+  }
+}
+
+async function removeCartItem(itemId) {
+  if (cartBusy) return
+  cartBusy = true
+  try {
+    const body = await api(`/api/shop/cart/items/${itemId}`, { method: 'DELETE' })
+    if (ok(body)) loadCart()
+    else toast('删除失败：' + (body.message || '未知错误'))
+  } catch (e) {
+    toast('网络异常，删除失败')
+  } finally {
+    cartBusy = false
+  }
+}
+
+async function clearCartAll() {
+  if (cartBusy) return
+  cartBusy = true
+  try {
+    const body = await api('/api/shop/cart', { method: 'DELETE' })
+    if (ok(body)) loadCart()
+  } finally {
+    cartBusy = false
+  }
+}
+
+/**
+ * 购物车合并结算：勾选条目 + 可选优惠券 + 支付方式 → 一笔 CART 订单。
+ *
+ * 满减券的门槛后端按「多件合计」判定——这正是购物车存在的意义：
+ * 单买一件够不着的"满100减10"，凑几件就够了。
+ * 结算仅支持余额支付：建 PENDING 单后由页面跳收银台确认支付（此刻才扣款）。
+ */
+async function checkoutCart(itemIds, userCouponId, payType) {
+  if (checkingOut) return null
+  checkingOut = true
+  try {
+    const requestId = newRequestId()
+    const body = await api('/api/shop/order/cart/checkout', {
+      method: 'POST',
+      headers: { 'X-Request-Id': requestId },
+      body: JSON.stringify({
+        itemIds,
+        userCouponId: userCouponId || null,
+        payType: payType || 'BALANCE',
+      }),
+    })
+    if (ok(body)) {
+      loadCart() // 已结算条目后端已删除，刷新本地列表
+      // 统一收银台模型：余额单也是 PENDING（确认支付才扣款），交由页面跳收银台
+      if (body.data.status === 'PENDING') {
+        toast(`订单已创建：${body.data.orderNo}，请在 30 分钟内完成支付`)
+        return { ok: true, pending: true, orderId: body.data.id, orderNo: body.data.orderNo }
+      }
+      const payNote = payType === 'BALANCE' ? '（余额支付）' : ''
+      const payable = (body.data.totalAmount || 0) - (body.data.discountAmount || 0)
+      toast(`下单成功！订单号 ${body.data.orderNo}，实付 ￥${payable.toFixed(2)}${payNote}`)
+      loadBalance()
+      loadAccount()
+      return { ok: true }
+    }
+    toast('结算失败：' + (body.message || '未知错误'))
+    return null
+  } catch (e) {
+    // 网络层失败：不知道后端是否已建单，不能假报成功（FE-04 同款纪律）
+    if (!demoFallbackAllowed()) return null
+    toast('网络异常，请稍后到订单列表核对')
+    return null
+  } finally {
+    checkingOut = false
   }
 }
 
@@ -1143,6 +1278,12 @@ export function useStore() {
     switchUser,
     buy,
     exchange,
+    addToCart,
+    loadCart,
+    updateCartItem,
+    removeCartItem,
+    clearCartAll,
+    checkoutCart,
     receive,
     doSignIn,
     cancelOrder,

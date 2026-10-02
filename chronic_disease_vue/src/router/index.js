@@ -71,6 +71,13 @@ export const constantRoutes = [
         component: () => import('@/views/shop/cashier.vue'),
         name: 'Cashier',
         meta: { title: '收银台', activeMenu: '/shop/medicine' }
+      },
+      {
+        // 购物车：多商品勾选合并结算，满减券门槛按合计金额判定
+        path: 'cart',
+        component: () => import('@/views/shop/cart.vue'),
+        name: 'ShopCart',
+        meta: { title: '购物车', activeMenu: '/shop/medicine' }
       }
     ]
   },

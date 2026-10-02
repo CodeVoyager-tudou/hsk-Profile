@@ -29,6 +29,8 @@
         @click="goTab(tab)"
       >
         <span class="tab-icon" v-html="tab.icon"></span>
+        <!-- 角标必须是 tab-icon 的兄弟节点：v-html 会替换元素内部内容，放里面会被图标 HTML 覆盖 -->
+        <span v-if="tab.badge && cartCount > 0" class="tab-badge">{{ cartCount > 99 ? '99+' : cartCount }}</span>
         <span class="tab-label">{{ tab.label }}</span>
       </div>
     </nav>
@@ -36,13 +38,22 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from '@/store/demo'
 
 const route = useRoute()
 const router = useRouter()
-const { state } = useStore()
+const { state, loadCart } = useStore()
+
+// 购物车角标：未结算总件数（cartItems 由 loadCart 在商城页/购物车页刷新）
+const cartCount = computed(() =>
+  state.cartItems.reduce((sum, i) => sum + i.quantity, 0))
+
+// 冷启动拉一次角标数据（加购/结算后由对应 action 再刷新）
+onMounted(() => {
+  loadCart()
+})
 
 const tabs = [
   {
@@ -56,6 +67,16 @@ const tabs = [
     path: '/shop/medicine',
     match: ['/shop', '/orders', '/coupons'],
     icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 4h10l1 4H6l1-4zm-2 6h14l-1 10H6L5 10z M9 14h2v4H9z M13 14h2v4h-2z"/></svg>'
+  },
+  {
+    // 购物车 tab：多商品合并结算才能凑满减券门槛。
+    // match 精确到 /shop/cart——isActive 按"最长前缀获胜"判定，
+    // 否则 /shop/cart 会同时命中商城(/shop)和购物车两个 tab
+    label: '购物车',
+    path: '/shop/cart',
+    match: ['/shop/cart'],
+    badge: true,          // 显示未结算件数角标
+    icon: '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 18a2 2 0 100 4 2 2 0 000-4zm10 0a2 2 0 100 4 2 2 0 000-4zM7.2 14.5l-.1.5h11.3l1.6-8H6.7L6 3H2v2h2.3l2 11h.9zm.9-2L7 8h11.1l-1.2 6H8.4z"/></svg>'
   },
   {
     label: 'AI助手',
@@ -78,7 +99,13 @@ const showTabBar = computed(() => {
 })
 
 function isActive(tab) {
-  return tab.match.some(m => route.path.startsWith(m))
+  if (!tab.match.some(m => route.path.startsWith(m))) return false
+  // 最长前缀获胜：/shop/cart 同时命中商城(/shop)与购物车(/shop/cart)，
+  // 路径更长的专属 tab 赢，避免两个 tab 同时高亮
+  const winner = tabs
+    .filter(t => t.match.some(m => route.path.startsWith(m)))
+    .sort((a, b) => b.path.length - a.path.length)[0]
+  return winner.path === tab.path
 }
 
 function goTab(tab) {
@@ -138,6 +165,24 @@ function goTab(tab) {
   transition: color .2s;
   -webkit-tap-highlight-color: transparent;
   user-select: none;
+  position: relative;
+}
+
+/* 购物车未结算件数角标（叠在图标右上角） */
+.tab-badge {
+  position: absolute;
+  top: 2px;
+  left: calc(50% + 6px);
+  min-width: 16px;
+  height: 16px;
+  line-height: 16px;
+  text-align: center;
+  font-size: 10px;
+  color: #fff;
+  background: #FF5722;
+  border-radius: 8px;
+  padding: 0 4px;
+  box-sizing: border-box;
 }
 
 .tab-item.active {

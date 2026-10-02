@@ -3,9 +3,14 @@ import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useStore } from '@/store/demo'
 import { medImage, bannerImg } from '@/utils/images'
+import { computed } from 'vue'
 
 const router = useRouter()
-const { state, searchMedicines } = useStore()
+const { state, searchMedicines, loadCart } = useStore()
+
+// 购物车里总件数（角标数字）；进商城页时静默刷新一次
+const cartCount = computed(() =>
+  state.cartItems.reduce((sum, i) => sum + i.quantity, 0))
 
 function goDetail(m) {
   state.currentMed = m
@@ -14,8 +19,13 @@ function goDetail(m) {
   router.push('/shop/detail/' + m.id)
 }
 
+function goCart() {
+  router.push('/shop/cart')
+}
+
 onMounted(() => {
   searchMedicines(1)
+  loadCart()
 })
 </script>
 
@@ -41,6 +51,11 @@ onMounted(() => {
         />
       </div>
       <span class="search-btn" @click="searchMedicines(1)">搜索</span>
+      <!-- 购物车入口（多商品合并结算才能凑满减门槛，见 /shop/cart） -->
+      <div class="cart-entry" @click="goCart">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="#009688"><path d="M7 18a2 2 0 100 4 2 2 0 000-4zm10 0a2 2 0 100 4 2 2 0 000-4zM7.2 14.5l-.1.5h11.3l1.6-8H6.7L6 3H2v2h2.3l2 11h.9zm.9-2L7 8h11.1l-1.2 6H8.4z"/></svg>
+        <span class="cart-badge" v-if="cartCount > 0">{{ cartCount > 99 ? '99+' : cartCount }}</span>
+      </div>
     </div>
 
     <!-- 分类 chips -->
@@ -161,6 +176,28 @@ onMounted(() => {
   cursor: pointer;
   white-space: nowrap;
   padding: 0 4px;
+}
+.cart-entry {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0 2px 0 6px;
+  cursor: pointer;
+}
+.cart-badge {
+  position: absolute;
+  top: -6px;
+  right: -8px;
+  min-width: 16px;
+  height: 16px;
+  line-height: 16px;
+  text-align: center;
+  font-size: 10px;
+  color: #fff;
+  background: #FF5722;
+  border-radius: 8px;
+  padding: 0 4px;
+  box-sizing: border-box;
 }
 
 /* 分类 chips */

@@ -46,7 +46,6 @@ describe('积分兑换 - 用户提醒', () => {
     expect(state.points.total).toBe(0)
     expect(state.page).toBe('detail')      // 未跳回首页（没有下单成功）
   })
-
   it('后端不可达 + 本地积分不足（演示模式）：提醒"积分不足"，不再假装成功', async () => {
     const { state, exchange } = useStore()
     state.points.total = 300              // 当前可用 300 < 需 900
@@ -89,5 +88,21 @@ describe('积分兑换 - 用户提醒', () => {
 
     expect(state.toastMsg).toContain('兑换成功')
     expect(state.page).toBe('home')
+  })
+
+  it('统一收银台模型：PENDING 单返回 pending 标记，交由页面跳收银台（不在此处跳首页）', async () => {
+    const { state, exchange } = useStore()
+    global.fetch = vi.fn().mockResolvedValue(json({
+      code: 200,
+      message: 'success',
+      data: { id: 88, orderNo: 'E202610', status: 'PENDING', payType: 'POINTS', pointsUsed: 900 },
+    }))
+
+    const r = await exchange(1)
+
+    expect(r).toMatchObject({ ok: true, pending: true, orderId: 88 })
+    expect(state.toastMsg).toContain('订单已创建')
+    expect(state.page).toBe('detail')      // 跳转由详情页负责（router.push 收银台）
+    expect(state.points.used).toBe(0)      // 下单阶段不扣分
   })
 })

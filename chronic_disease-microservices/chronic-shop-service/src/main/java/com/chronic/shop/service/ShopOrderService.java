@@ -9,7 +9,7 @@ import java.util.List;
 public interface ShopOrderService extends IService<ShopOrder> {
 
     /**
-     * 现金下单(可叠加优惠券), 购买后获得积分奖励
+     * 下单(可叠加优惠券), 购买后获得积分奖励 —— 内部/测试重载，默认 CASH
      */
     ShopOrder createOrder(Long userId, Long medicineId, Integer quantity, Long userCouponId);
 
@@ -27,7 +27,29 @@ public interface ShopOrderService extends IService<ShopOrder> {
                           String requestId, String payType);
 
     /**
-     * 继续支付待支付订单（PENDING 现金订单走收银台确认；余额订单为同步支付，不存在 PENDING 态）
+     * 购物车合并结算：勾选的购物车条目（可多件不同药品）合成<b>一笔</b>订单。
+     *
+     * <p>这是满减券真正"用得上"的关键：门槛按多件商品的合计金额判定，
+     * 而不是单商品小计——单买一件 12 元的药够不着"满 30 减 5"，
+     * 购物车里再凑两件就够了。券仍核销到这一笔订单上（user_coupon 一券一单的约束不变）。</p>
+     *
+     * <p>事务内一次完成：校验条目归属 → 逐件扣库存（任一不足整体回滚）→ 按现价合计
+     * → 用券 → 建单(order_type=CART) + 写明细 → 清掉已结算的购物车条目 → 走与直购
+     * 完全相同的支付链路（CASH 挂超时消息 / BALANCE 同步扣款）。</p>
+     *
+     * @param userId       登录用户（网关注入，购物车条目归属校验依据）
+     * @param itemIds      勾选的购物车条目 id（cart_item.id）
+     * @param userCouponId 用户优惠券 id，可空
+     * @param requestId    幂等键（X-Request-Id），与直购共用 shop_order(user_id, request_id) 唯一键
+     * @param payType      CASH / BALANCE
+     */
+    ShopOrder createCartOrder(Long userId, java.util.List<Long> itemIds, Long userCouponId,
+                              String requestId, String payType);
+
+    /**
+     * 收银台确认支付（PENDING 单统一入口，按 payType 分派扣款）：
+     * BALANCE 此刻扣余额、POINTS 此刻扣积分、CASH 走模拟渠道，全部推进 PAID。
+     * 业务失败（余额/积分不足）如实报错，订单保持 PENDING 可重试或等超时关单。
      */
     ShopOrder payPendingOrder(Long orderId, Long userId);
 
@@ -41,7 +63,7 @@ public interface ShopOrderService extends IService<ShopOrder> {
     void beginPaymentAfterCreated(ShopOrder order);
 
     /**
-     * 积分兑换下单(扣积分, 不参与优惠券和积分奖励)
+     * 积分兑换下单(建 PENDING 单，收银台确认支付时才扣积分；不参与优惠券和积分奖励)
      */
     ShopOrder exchangeOrder(Long userId, Long medicineId, Integer quantity);
 

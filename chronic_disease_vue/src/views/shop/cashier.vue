@@ -44,6 +44,13 @@ const payable = computed(() => {
   const o = order.value || {}
   return (Number(o.totalAmount || 0) - Number(o.discountAmount || 0)).toFixed(2)
 })
+// 积分单：应付以「积分」为单位展示（确认支付时才真正扣分），金额仅供对照
+const isPointsOrder = computed(() => order.value && order.value.payType === 'POINTS')
+const pointsPayable = computed(() => Number((order.value || {}).pointsUsed || 0))
+
+/** 应付文案：积分单 = "N 积分"，其余 = "￥xx" */
+const payableText = computed(() =>
+  isPointsOrder.value ? `${pointsPayable.value} 积分` : `￥${payable.value}`)
 
 async function load() {
   const o = await fetchOrder(orderId)
@@ -59,7 +66,9 @@ function askPay() {
   confirmBox.value = {
     show: true, kind: 'pay', busy: false,
     title: '确认支付',
-    text: `本次需支付 ￥${payable.value}，支付后订单进入已完成状态、不可撤销。`,
+    text: isPointsOrder.value
+      ? `本次将扣除 ${pointsPayable.value} 积分，确认后订单完成、积分不可退回（库存不足等失败会原样报错）。`
+      : `本次需支付 ￥${payable.value}，支付后订单进入已完成状态、不可撤销。`,
     okText: '确认支付',
   }
 }
@@ -69,8 +78,8 @@ function askCancel() {
   confirmBox.value = {
     show: true, kind: 'cancel', busy: false,
     title: '取消订单',
-    text: '取消后药品库存与优惠券会退回（秒杀单同时释放秒杀名额），'
-      + '该操作不可恢复，需要重新下单。',
+    text: '取消后药品库存与优惠券会退回（秒杀单同时释放秒杀名额；'
+      + '未确认支付的余额/积分单本就未扣款，取消不涉及退款），该操作不可恢复，需要重新下单。',
     okText: '确认取消',
   }
 }
@@ -147,7 +156,7 @@ onUnmounted(() => {
           </template>
           <template v-else>
             <div class="st-main">{{ statusText(order.status) }}</div>
-            <div class="st-sub">订单已取消，库存与优惠券已退回</div>
+            <div class="st-sub">订单已取消，库存与优惠券已退回{{ isPointsOrder ? '（积分未扣除）' : '' }}</div>
           </template>
         </div>
 
@@ -161,13 +170,21 @@ onUnmounted(() => {
               <div class="ometa">{{ payText(order.payType) }} · {{ formatTime(order.createTime) }}</div>
             </div>
             <div class="oprices">
-              <div class="oamt">￥{{ Number(order.totalAmount || 0).toFixed(2) }}</div>
-              <div class="odiscount" v-if="order.discountAmount > 0">已优惠 ￥{{ Number(order.discountAmount).toFixed(2) }}</div>
+              <div class="oamt" v-if="isPointsOrder">{{ pointsPayable }} 积分</div>
+              <div class="oamt" v-else>￥{{ Number(order.totalAmount || 0).toFixed(2) }}</div>
+              <div class="odiscount" v-if="!isPointsOrder && order.discountAmount > 0">已优惠 ￥{{ Number(order.discountAmount).toFixed(2) }}</div>
+            </div>
+          </div>
+          <!-- 购物车合并单（CART）：逐件列出商品与金额；SINGLE 单不显示这块 -->
+          <div class="oitems" v-if="order.items && order.items.length > 1">
+            <div class="oitem" v-for="it in order.items" :key="it.id">
+              <span class="oin-name">{{ it.medicineName }} × {{ it.quantity }}</span>
+              <span class="oin-sub">￥{{ Number(it.subtotal).toFixed(2) }}</span>
             </div>
           </div>
           <div class="pay-line">
-            <span>需付款</span>
-            <span class="pay-amount">￥{{ payable }}</span>
+            <span>{{ isPointsOrder ? '需付积分' : '需付款' }}</span>
+            <span class="pay-amount">{{ payableText }}</span>
           </div>
           <div class="order-no">订单号 {{ order.orderNo }}</div>
         </div>
@@ -247,6 +264,23 @@ onUnmounted(() => {
 .oprices { text-align: right; }
 .oamt { font-size: 15px; font-weight: 700; color: #E53935; }
 .odiscount { font-size: 11px; color: #FF9800; margin-top: 4px; }
+/* 购物车合并单的明细块 */
+.oitems {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #fafbfc;
+  border-radius: 8px;
+}
+.oitem {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: #555;
+  padding: 3px 0;
+}
+.oin-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oin-sub { flex-shrink: 0; color: #888; }
 .pay-line {
   display: flex; justify-content: space-between; align-items: center;
   border-top: 1px dashed #eee; margin-top: 12px; padding-top: 12px;

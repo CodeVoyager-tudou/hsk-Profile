@@ -10,10 +10,11 @@
 
 - **AI 健康问答**：多智能体编排（路由 → 并行领域专家 → 整合），Milvus 混合检索 + 重排，答案可溯源到知识文档页码；真流式输出、多轮会话、滚动摘要控制上下文
 - **AI 查订单/资产**：自然语言查询自己的订单与积分/余额资产，经服务间内部接口取数，取消订单只生成提案不直接执行
-- **药品商城**：药品列表/详情、现金购买、积分兑换、限时秒杀（原子预扣库存防超卖）
+- **提示词热更新**：系统提示词外置到 Nacos（`chronic-ai-prompts`），线上改词即时生效、无需重启服务；本地配置缺席时自动降级为内置默认值
+- **药品商城**：药品列表/详情、购物车（加购/改量/结算）、统一收银台、限时秒杀（原子预扣库存防超卖）
 - **优惠券**：领券用 Redisson 分布式锁 + 数据库唯一键兜底，多实例下也不会超领
 - **积分与余额**：每日签到（周循环）、积分流水、余额账户、跨服务扣积分幂等
-- **订单**：下单、模拟支付（本项目不接真实支付渠道）、超时未支付自动关单并归还库存/优惠券、订单取消退退款
+- **订单**：直接购买或购物车结算统一进收银台，余额/积分下单先进待支付、确认支付才扣款（本项目不接真实支付渠道）；订单明细快照、超时未支付自动关单并归还库存/优惠券、订单取消退退款
 - **账户安全**：JWT 鉴权、登出即时失效（Redis 黑名单）、登录失败防撞库锁定
 
 **管理端**
@@ -33,7 +34,7 @@ flowchart LR
         GW["chronic-gateway :8090<br/>JWT 鉴权 · 白名单<br/>身份头剥离/注入 · Sentinel 限流"]
         US["chronic-user-service :8081<br/>登录注册 · 健康档案<br/>AI 代理（WebClient/SSE）"]
         PS["chronic-points-service :8082<br/>积分账户 · 签到<br/>余额 · 流水"]
-        SS["chronic-shop-service :8083<br/>药品 · 订单 · 优惠券 · 秒杀"]
+        SS["chronic-shop-service :8083<br/>药品 · 购物车 · 订单 · 收银台<br/>优惠券 · 秒杀"]
     end
 
     subgraph AISvc["AI 服务（FastAPI + LangGraph）"]
@@ -75,8 +76,8 @@ flowchart LR
 ```
 ├── chronic_disease/                # AI 服务：FastAPI + LangGraph 多智能体 RAG 问答（含知识入库脚本）
 ├── chronic_disease-microservices/  # 微服务端：网关 + 用户/积分/商城三个服务 + SQL 初始化脚本
-├── chronic_disease_vue/            # 前端：商城、签到、优惠券、订单、AI 问诊、管理端
-└── deploy/nacos/                   # Nacos 配置（9 个 dataId，敏感项走环境变量）
+├── chronic_disease_vue/            # 前端：商城（购物车/收银台/秒杀）、签到、优惠券、订单、AI 问诊、管理端
+└── deploy/nacos/                   # Nacos 配置（10 个 dataId，含 AI 提示词热更新；敏感项走环境变量）
 ```
 
 各子项目有独立的 README，包含更细的模块说明与设计要点：
@@ -92,6 +93,7 @@ mysql -h<HOST> -P3307 -uroot -p < chronic_disease-microservices/sql/init.sql
 
 # 2) 导入 Nacos 配置：把 deploy/nacos/*.yaml 发布到 Nacos（DEFAULT_GROUP），
 #    其中的 ${JWT_SECRET}/${MYSQL_PASSWORD} 等占位项用环境变量或发布前替换填入
+#    （也可运行 deploy/nacos/import-all.ps1 / import-all.sh 一键导入，需先设置 NACOS_PASSWORD）
 
 # 3) 构建并启动四个 Java 服务（需 Nacos/Redis/MySQL 可达）
 cd chronic_disease-microservices

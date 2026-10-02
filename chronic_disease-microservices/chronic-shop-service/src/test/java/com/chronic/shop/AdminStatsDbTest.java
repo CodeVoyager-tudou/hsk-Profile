@@ -55,7 +55,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class AdminStatsDbTest {
 
     private static final String JDBC =
-            "jdbc:mysql://192.168.100.128:3307/edu_admin_stats_it"
+            "jdbc:mysql://192.168.100.128:3307/admin_stats_it"
                     + "?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true";
     private static final String JDBC_SERVER =
             "jdbc:mysql://192.168.100.128:3307"
@@ -72,8 +72,8 @@ class AdminStatsDbTest {
 
         try (Connection connection = DriverManager.getConnection(JDBC_SERVER, dbUser, dbPassword);
              Statement statement = connection.createStatement()) {
-            statement.execute("DROP DATABASE IF EXISTS edu_admin_stats_it");
-            statement.execute("CREATE DATABASE edu_admin_stats_it DEFAULT CHARSET utf8mb4");
+            statement.execute("DROP DATABASE IF EXISTS admin_stats_it");
+            statement.execute("CREATE DATABASE admin_stats_it DEFAULT CHARSET utf8mb4");
         }
         Flyway.configure()
                 .dataSource(JDBC, dbUser, dbPassword)
@@ -94,7 +94,7 @@ class AdminStatsDbTest {
     static void dropDb() throws Exception {
         try (Connection connection = DriverManager.getConnection(JDBC_SERVER, dbUser, dbPassword);
              Statement statement = connection.createStatement()) {
-            statement.execute("DROP DATABASE IF EXISTS edu_admin_stats_it");
+            statement.execute("DROP DATABASE IF EXISTS admin_stats_it");
         }
     }
 
@@ -105,7 +105,7 @@ class AdminStatsDbTest {
         // adminStats 只用 baseMapper（selectMaps/selectCount），其余依赖传 null 即可。
         // SqlSession 必须在断言完成前保持打开：mapper 代理绑定在 session 上，关了再调就抛异常。
         ShopOrderServiceImpl service = new ShopOrderServiceImpl(
-                null, null, null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null, null, null);
         try (SqlSession session = factory.openSession(true)) {
             ReflectionTestUtils.setField(service, "baseMapper", session.getMapper(ShopOrderMapper.class));
 

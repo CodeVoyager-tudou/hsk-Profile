@@ -12,7 +12,7 @@ export function statusText(s) {
 }
 
 export function payText(p) {
-  return { CASH: '现金支付', POINTS: '积分兑换', BALANCE: '余额支付' }[p] || p
+  return { CASH: '现金支付', POINTS: '积分支付', BALANCE: '余额支付' }[p] || p
 }
 
 /** 资金流水类型文案（余额账户） */

@@ -39,10 +39,10 @@ onMounted(() => {
 })
 onUnmounted(() => clearInterval(tickTimer))
 
-// 待支付的现金单：点卡片（商品图/信息区）进收银台，与「继续支付」按钮同行为；
+// 待支付单（现金/余额/积分）都可点卡片进收银台完成支付，与「继续支付」按钮同行为；
 // 其他状态的卡片点击无动作（保持原有行为不变）
 function openOrder(o) {
-  if (o.status === 'PENDING' && o.payType === 'CASH') {
+  if (o.status === 'PENDING') {
     router.push('/shop/cashier/' + o.id)
   }
 }
@@ -73,31 +73,38 @@ function openOrder(o) {
         </div>
         <div
           class="obody"
-          :class="{ clickable: o.status === 'PENDING' && o.payType === 'CASH' }"
+          :class="{ clickable: o.status === 'PENDING' }"
           @click="openOrder(o)"
         >
           <div class="oimg"><img :src="orderImg(o)" alt=""></div>
           <div class="oinfo">
             <div class="oname">{{ o.medicineName }}</div>
             <div class="oqty">数量 ×{{ o.quantity }}</div>
+            <!-- 购物车合并单（CART）：展开每件商品；SINGLE 单只有一行明细，保持原样不展开 -->
+            <div class="oitems" v-if="o.items && o.items.length > 1">
+              <div class="oitem" v-for="it in o.items" :key="it.id">
+                <span class="oin-name">{{ it.medicineName }}</span>
+                <span class="oin-sub">￥{{ it.unitPrice }} × {{ it.quantity }}</span>
+              </div>
+            </div>
           </div>
           <div class="oprices">
-            <div class="oamt">￥{{ Number(o.totalAmount || 0).toFixed(2) }}</div>
-            <div class="odiscount" v-if="o.discountAmount > 0">已优惠 ￥{{ Number(o.discountAmount || 0).toFixed(2) }}</div>
+            <div class="oamt" v-if="o.payType === 'POINTS'">{{ o.pointsUsed }} 积分</div>
+            <div class="oamt" v-else>￥{{ Number(o.totalAmount || 0).toFixed(2) }}</div>
+            <div class="odiscount" v-if="o.payType !== 'POINTS' && o.discountAmount > 0">已优惠 ￥{{ Number(o.discountAmount || 0).toFixed(2) }}</div>
             <div class="odiscount refund" v-if="o.refundAmount > 0">已退款 ￥{{ Number(o.refundAmount || 0).toFixed(2) }}</div>
-            <div class="odiscount points" v-if="o.pointsUsed > 0">耗积分 {{ o.pointsUsed }}</div>
           </div>
         </div>
         <div class="ofoot">
           <span class="meta">
             {{ payText(o.payType) }} · {{ formatTime(o.createTime) }}
-            <span v-if="o.status === 'PENDING' && o.payType === 'CASH'" class="remain">
+            <span v-if="o.status === 'PENDING'" class="remain">
               {{ isExpired(o) ? '已超时，正在自动关单' : `剩余 ${remainText(o)}` }}
             </span>
           </span>
           <span class="ops">
             <button
-              v-if="o.status === 'PENDING' && o.payType === 'CASH'"
+              v-if="o.status === 'PENDING'"
               class="btn-pay"
               @click.stop="router.push('/shop/cashier/' + o.id)"
             >
@@ -242,6 +249,23 @@ function openOrder(o) {
   font-size: 12px;
   color: #999;
 }
+/* 购物车合并单的明细行 */
+.oitems {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #fafbfc;
+  border-radius: 8px;
+}
+.oitem {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: #666;
+  padding: 2px 0;
+}
+.oin-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oin-sub { flex-shrink: 0; color: #999; }
 .oprices {
   text-align: right;
 }

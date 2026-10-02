@@ -78,6 +78,12 @@ class ShopOrderServiceImplTest {
     @Mock
     private SeckillSlotService seckillSlotService;
 
+    @Mock
+    private com.chronic.shop.mapper.CartItemMapper cartItemMapper;
+
+    @Mock
+    private com.chronic.shop.mapper.ShopOrderItemMapper shopOrderItemMapper;
+
     private ShopOrderServiceImpl shopOrderService;
 
     /**
@@ -87,9 +93,11 @@ class ShopOrderServiceImplTest {
      */
     @BeforeAll
     static void initMybatisPlusTableInfo() {
-        TableInfoHelper.initTableInfo(
-                new org.apache.ibatis.builder.MapperBuilderAssistant(new MybatisConfiguration(), ""),
-                ShopOrder.class);
+        org.apache.ibatis.builder.MapperBuilderAssistant assistant =
+                new org.apache.ibatis.builder.MapperBuilderAssistant(new MybatisConfiguration(), "");
+        TableInfoHelper.initTableInfo(assistant, ShopOrder.class);
+        // 取消/关单退库存会按明细查 shop_order_item（LambdaQueryWrapper 需要列名缓存）
+        TableInfoHelper.initTableInfo(assistant, com.chronic.shop.entity.ShopOrderItem.class);
     }
 
     private Medicine createMedicine() {
@@ -104,15 +112,31 @@ class ShopOrderServiceImplTest {
         return m;
     }
 
+    /** 指定 id/名称/价格/积分奖励 的变体，购物车多商品用例构造第二件商品用 */
+    private Medicine createMedicine(long id, String name, String price, int pointsReward) {
+        Medicine m = new Medicine();
+        m.setId(id);
+        m.setName(name);
+        m.setPrice(new BigDecimal(price));
+        m.setStock(100);
+        m.setStatus(1);
+        m.setPointsReward(pointsReward);
+        return m;
+    }
+
     @BeforeEach
     void setUp() {
         OrderEventPublisher orderEventPublisher = new OrderEventPublisher(Optional.empty());
         shopOrderService = new ShopOrderServiceImpl(medicineService, medicineMapper, userCouponMapper, couponService,
                 pointsFeignClient, compensationTaskMapper, paymentGateway, orderPaymentService, orderEventPublisher,
-                payTimeoutPublisher, seckillSlotService);
+                payTimeoutPublisher, seckillSlotService, cartItemMapper, shopOrderItemMapper);
         ReflectionTestUtils.setField(shopOrderService, "baseMapper", shopOrderMapper);
         // 本地演示渠道默认即时确认（生产由真实渠道回调推进）
         lenient().when(paymentGateway.confirmImmediately()).thenReturn(true);
+        // 购物车结算用例走 BALANCE：扣款 Feign 统一 stub 成功。
+        // sourceId 用 nullable：mock 的 insert 不会像真 DB 那样回填自增 id，order.id 是 null
+        lenient().when(pointsFeignClient.deductBalance(anyLong(), any(java.math.BigDecimal.class),
+                anyString(), nullable(Long.class), anyString())).thenReturn(Result.success(true));
         lenient().when(orderPaymentService.confirmPaid(any())).thenAnswer(invocation -> {
             ShopOrder paid = new ShopOrder();
             paid.setId(1L);
@@ -196,22 +220,24 @@ class ShopOrderServiceImplTest {
     }
 
     @Test
-    void exchangeOrder_shouldCreatePointsOrder() {
+    void exchangeOrder_shouldCreatePendingPointsOrder() {
+        // 统一收银台模型：积分单建单时 PENDING、不扣积分；
+        // 扣分发生在收银台确认支付（payPendingOrder），超时关单时积分从未离开账户
         Medicine medicine = createMedicine();
         when(medicineMapper.selectById(1L)).thenReturn(medicine);
         when(medicineService.reduceStock(1L, 1)).thenReturn(true);
         when(shopOrderMapper.insert(any(ShopOrder.class))).thenReturn(1);
-        Result<Boolean> deductResult = Result.success(true);
-        when(pointsFeignClient.deductPoints(anyLong(), anyInt(), anyString(), nullable(Long.class), anyString()))
-                .thenReturn(deductResult);
+        when(paymentGateway.confirmImmediately()).thenReturn(false);
 
         ShopOrder order = shopOrderService.exchangeOrder(1L, 1L, 1);
 
         assertNotNull(order);
         assertEquals("POINTS", order.getPayType());
-        assertEquals(850, order.getPointsUsed());
+        assertEquals("PENDING", order.getStatus(), "积分单建单后应待支付");
+        assertEquals(850, order.getPointsUsed(), "points_used 是应付积分，非已扣");
         assertEquals(0, order.getPointsEarned());
-        verify(pointsFeignClient, times(1)).deductPoints(eq(1L), eq(850), anyString(), nullable(Long.class), anyString());
+        verify(pointsFeignClient, never()).deductPoints(anyLong(), anyInt(), anyString(), nullable(Long.class), anyString());
+        verify(payTimeoutPublisher, times(1)).publishOrderTimeout(eq(order.getId()), anyString());
     }
 
     @Test
@@ -355,78 +381,91 @@ class ShopOrderServiceImplTest {
         verify(shopOrderMapper, never()).insert(any(ShopOrder.class));
     }
 
-    // ===== J-03 修复的回归防护 =====
-    // 缺陷背景：原实现把「远程扣积分」放在本地事务内部，且 Feign readTimeout=3s。
-    // 于是存在窗口：扣分已在 points-service 生效，但本地事务随后回滚
-    // -> 订单没了、库存归还了、积分却被扣走且**补偿台账为空**（异常回滚会连台账一起撤销），
-    //    积分永久丢失。
-    // 修复：改为**先落单、后扣分**；扣分失败回滚事务并写补偿台账以便核对退还。
+    // ===== 积分确认支付（payPendingOrder POINTS 分支）=====
+    // 统一收银台模型：积分单建单时 PENDING 不扣分，确认支付才真正扣。
+    // 历史 J-03 的「先落单后扣分」顺序约束在新模型下自然成立：扣分入口就是 payPendingOrder，
+    // 调用时订单必然已存在（且尚未 PAID），扣分结果不明时写补偿台账按订单核对退还。
 
-    @Test
-    void exchangeOrder_shouldInsertOrderBeforeDeductingPoints() {
-        // 核心修复点：落单必须先于远程扣分，避免「扣了分却没有订单」
-        Medicine medicine = createMedicine();
-        when(medicineMapper.selectById(1L)).thenReturn(medicine);
-        when(medicineService.reduceStock(1L, 1)).thenReturn(true);
-        when(shopOrderMapper.insert(any(ShopOrder.class))).thenReturn(1);
-        when(pointsFeignClient.deductPoints(anyLong(), anyInt(), anyString(), nullable(Long.class), anyString()))
-                .thenReturn(Result.success(true));
-
-        shopOrderService.exchangeOrder(1L, 1L, 1);
-
-        InOrder inOrder = inOrder(shopOrderMapper, pointsFeignClient);
-        inOrder.verify(shopOrderMapper).insert(any(ShopOrder.class));
-        inOrder.verify(pointsFeignClient).deductPoints(anyLong(), anyInt(), anyString(),
-                nullable(Long.class), anyString());
+    /** 构造一笔待支付订单并 stub 查询链（getById + 图片/明细回填的批量查询） */
+    private ShopOrder pendingOrder(String payType) {
+        ShopOrder order = new ShopOrder();
+        order.setId(9L);
+        order.setUserId(1L);
+        order.setStatus("PENDING");
+        order.setPayType(payType);
+        order.setMedicineId(1L);
+        order.setMedicineName("苯磺酸氨氯地平片");
+        order.setQuantity(2);
+        order.setTotalAmount(new BigDecimal("57.0"));
+        if ("POINTS".equals(payType)) {
+            order.setPointsUsed(1700);
+        }
+        when(shopOrderMapper.selectById(9L)).thenReturn(order);
+        when(medicineMapper.selectBatchIds(any())).thenReturn(List.of());
+        return order;
     }
 
     @Test
-    void exchangeOrder_shouldRecordCompensationAndFail_whenDeductTimeoutUnknown() {
-        // 扣分结果不明（超时/网络异常）：必须抛业务异常回滚本地事务，
-        // 并写入补偿台账（POINTS_EXCHANGE_ROLLBACK）以便核对并退还可能已被扣走的积分。
-        Medicine medicine = createMedicine();
-        when(medicineMapper.selectById(1L)).thenReturn(medicine);
-        when(medicineService.reduceStock(1L, 1)).thenReturn(true);
-        when(shopOrderMapper.insert(any(ShopOrder.class))).thenReturn(1);
+    void payOrder_points_shouldDeductAfterOrderExists() {
+        // 核心顺序（原 J-03 语义的延续）：扣积分带的是已存在订单的 id，
+        // 任何「扣了分却没有订单」的窗口在入口处就不存在
+        pendingOrder("POINTS");
+        when(pointsFeignClient.deductPoints(anyLong(), anyInt(), anyString(), nullable(Long.class), anyString()))
+                .thenReturn(Result.success(true));
+        when(orderPaymentService.confirmPaid(9L)).thenAnswer(invocation -> {
+            ShopOrder paid = new ShopOrder();
+            paid.setId(9L);
+            paid.setStatus("PAID");
+            return paid;
+        });
+
+        ShopOrder paid = shopOrderService.payPendingOrder(9L, 1L);
+
+        assertEquals("PAID", paid.getStatus());
+        verify(pointsFeignClient).deductPoints(eq(1L), eq(1700), eq("POINTS_EXCHANGE"),
+                eq(9L), anyString());
+        verify(orderPaymentService).confirmPaid(9L);
+    }
+
+    @Test
+    void payOrder_points_shouldRecordCompensationAndFail_whenDeductTimeoutUnknown() {
+        // 确认支付时扣分结果不明（超时/网络异常）：抛业务异常回滚（订单仍是 PENDING），
+        // 并在事务回滚之后写补偿台账（POINTS_EXCHANGE_ROLLBACK）以便核对并退还可能已扣的积分
+        pendingOrder("POINTS");
         when(pointsFeignClient.deductPoints(anyLong(), anyInt(), anyString(), nullable(Long.class), anyString()))
                 .thenThrow(new RuntimeException("Read timed out"));
         when(compensationTaskMapper.insert(any(CompensationTask.class))).thenReturn(1);
 
         assertThrows(BusinessException.class,
-                () -> shopOrderService.exchangeOrder(1L, 1L, 1));
+                () -> shopOrderService.payPendingOrder(9L, 1L));
 
         ArgumentCaptor<CompensationTask> captor = ArgumentCaptor.forClass(CompensationTask.class);
         verify(compensationTaskMapper, times(1)).insert(captor.capture());
         CompensationTask task = captor.getValue();
         assertEquals("POINTS_EXCHANGE_ROLLBACK", task.getBizType());
-        assertEquals(850, readPoints(task.getPayload()));
+        assertEquals(1700, readPoints(task.getPayload()));
     }
 
     @Test
-    void exchangeOrder_shouldNotRecordCompensation_whenPointsInsufficient() {
-        // 业务性失败（余额不足）：就地回滚即可，无需补偿（积分从未被扣）
-        Medicine medicine = createMedicine();
-        when(medicineMapper.selectById(1L)).thenReturn(medicine);
-        when(medicineService.reduceStock(1L, 1)).thenReturn(true);
-        when(shopOrderMapper.insert(any(ShopOrder.class))).thenReturn(1);
+    void payOrder_points_shouldNotRecordCompensation_whenPointsInsufficient() {
+        // 业务性失败（积分不足，Feign 错误解码器透传）：就地回滚即可，无需补偿（积分从未被扣）
+        pendingOrder("POINTS");
         when(pointsFeignClient.deductPoints(anyLong(), anyInt(), anyString(), nullable(Long.class), anyString()))
                 .thenReturn(Result.error("积分余额不足"));
 
-        assertThrows(BusinessException.class,
-                () -> shopOrderService.exchangeOrder(1L, 1L, 1));
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> shopOrderService.payPendingOrder(9L, 1L));
 
+        assertTrue(ex.getMessage().contains("积分余额不足"), "应如实透传积分不足，实际: " + ex.getMessage());
         verify(compensationTaskMapper, never()).insert(any(CompensationTask.class));
+        verify(orderPaymentService, never()).confirmPaid(any());
     }
 
     @Test
-    void exchangeOrder_shouldDeferCompensationUntilAfterRollback() {
-        // J-03 的关键一环：补偿台账**不能在事务内写**，否则会被随后的 rollback 一起撤销
-        //（那就等于原缺陷：扣了积分却没有任何补偿记录）。
-        // 本用例模拟真实事务上下文，验证台账是在 afterCompletion(ROLLED_BACK) 之后才落库。
-        Medicine medicine = createMedicine();
-        when(medicineMapper.selectById(1L)).thenReturn(medicine);
-        when(medicineService.reduceStock(1L, 1)).thenReturn(true);
-        when(shopOrderMapper.insert(any(ShopOrder.class))).thenReturn(1);
+    void payOrder_points_shouldDeferCompensationUntilAfterRollback() {
+        // 原 J-03 的关键一环：补偿台账**不能在事务内写**，否则会被随后的 rollback 一起撤销
+        //（等于白记）。模拟真实事务上下文，验证台账是在 afterCompletion(ROLLED_BACK) 之后才落库
+        pendingOrder("POINTS");
         when(pointsFeignClient.deductPoints(anyLong(), anyInt(), anyString(), nullable(Long.class), anyString()))
                 .thenThrow(new RuntimeException("Read timed out"));
         when(compensationTaskMapper.insert(any(CompensationTask.class))).thenReturn(1);
@@ -434,7 +473,7 @@ class ShopOrderServiceImplTest {
         TransactionSynchronizationManager.initSynchronization();
         try {
             assertThrows(BusinessException.class,
-                    () -> shopOrderService.exchangeOrder(1L, 1L, 1));
+                    () -> shopOrderService.payPendingOrder(9L, 1L));
 
             // 1) 事务尚未结束时，台账**不得**已写入（否则会被回滚撤销）
             verify(compensationTaskMapper, never()).insert(any(CompensationTask.class));
@@ -447,25 +486,22 @@ class ShopOrderServiceImplTest {
             ArgumentCaptor<CompensationTask> captor = ArgumentCaptor.forClass(CompensationTask.class);
             verify(compensationTaskMapper, times(1)).insert(captor.capture());
             assertEquals("POINTS_EXCHANGE_ROLLBACK", captor.getValue().getBizType());
-            assertEquals(850, readPoints(captor.getValue().getPayload()));
+            assertEquals(1700, readPoints(captor.getValue().getPayload()));
         } finally {
             TransactionSynchronizationManager.clearSynchronization();
         }
     }
 
     @Test
-    void exchangeOrder_shouldSkipCompensation_whenTransactionCommitted() {
+    void payOrder_points_shouldSkipCompensation_whenTransactionCommitted() {
         // 事务是提交（而非回滚）时不应写补偿台账
-        Medicine medicine = createMedicine();
-        when(medicineMapper.selectById(1L)).thenReturn(medicine);
-        when(medicineService.reduceStock(1L, 1)).thenReturn(true);
-        when(shopOrderMapper.insert(any(ShopOrder.class))).thenReturn(1);
+        pendingOrder("POINTS");
         when(pointsFeignClient.deductPoints(anyLong(), anyInt(), anyString(), nullable(Long.class), anyString()))
                 .thenThrow(new RuntimeException("boom"));
 
         TransactionSynchronizationManager.initSynchronization();
         try {
-            assertThrows(BusinessException.class, () -> shopOrderService.exchangeOrder(1L, 1L, 1));
+            assertThrows(BusinessException.class, () -> shopOrderService.payPendingOrder(9L, 1L));
             List<TransactionSynchronization> syncs = TransactionSynchronizationManager.getSynchronizations();
             // 模拟事务最终提交 -> 不应写台账
             syncs.forEach(s -> s.afterCompletion(TransactionSynchronization.STATUS_COMMITTED));
@@ -502,57 +538,71 @@ class ShopOrderServiceImplTest {
         return cn.hutool.json.JSONUtil.parseObj(payload == null ? "{}" : payload).getInt("points", 0);
     }
 
-    // ===== 余额支付（BALANCE）=====
+    // ===== 余额支付（BALANCE，统一收银台模型）=====
 
     @Test
-    void createOrder_balance_shouldPaySyncAndBecomePaid() {
-        Medicine medicine = createMedicine(); // 单价 28.5 × 2 = 应付 57.0
+    void createOrder_balance_shouldStayPendingWithoutDeducting() {
+        // 下单不扣钱：BALANCE 单建单后 PENDING，余额的扣取发生在收银台确认支付
+        Medicine medicine = createMedicine();
         when(medicineMapper.selectById(1L)).thenReturn(medicine);
         when(medicineService.reduceStock(1L, 2)).thenReturn(true);
         when(shopOrderMapper.insert(any(ShopOrder.class))).thenReturn(1);
-        when(pointsFeignClient.deductBalance(eq(1L), any(BigDecimal.class), eq("BALANCE_PAY"),
-                any(), anyString())).thenReturn(Result.success(true));
+        when(paymentGateway.confirmImmediately()).thenReturn(false);
 
         ShopOrder order = shopOrderService.createOrder(1L, 1L, 2, null, "req-b1", "BALANCE");
 
         assertEquals("BALANCE", order.getPayType());
-        assertEquals("PAID", order.getStatus());
-        // 扣款金额必须是应付口径（总额-优惠），而不是总额
-        verify(pointsFeignClient).deductBalance(eq(1L), eq(new BigDecimal("57.0")),
-                eq("BALANCE_PAY"), any(), anyString());
-        verify(orderPaymentService).confirmPaid(any());
+        assertEquals("PENDING", order.getStatus());
+        verify(pointsFeignClient, never()).deductBalance(anyLong(), any(BigDecimal.class),
+                anyString(), any(), anyString());
+        verify(payTimeoutPublisher, times(1)).publishOrderTimeout(eq(order.getId()), anyString());
     }
 
     @Test
-    void createOrder_balance_shouldThrowWithoutConfirm_whenInsufficientBalance() {
-        Medicine medicine = createMedicine();
-        when(medicineMapper.selectById(1L)).thenReturn(medicine);
-        when(medicineService.reduceStock(1L, 1)).thenReturn(true);
-        when(shopOrderMapper.insert(any(ShopOrder.class))).thenReturn(1);
-        when(pointsFeignClient.deductBalance(eq(1L), any(BigDecimal.class), eq("BALANCE_PAY"),
-                any(), anyString())).thenReturn(Result.error(400, "余额不足"));
+    void payOrder_balance_shouldDeductPayableAndConfirm() {
+        // 收银台确认支付：此刻才扣余额，且必须是应付口径（总额-优惠），而不是总额
+        pendingOrder("BALANCE");
+        when(pointsFeignClient.deductBalance(anyLong(), any(BigDecimal.class), anyString(),
+                nullable(Long.class), anyString())).thenReturn(Result.success(true));
+        when(orderPaymentService.confirmPaid(9L)).thenAnswer(invocation -> {
+            ShopOrder paid = new ShopOrder();
+            paid.setId(9L);
+            paid.setStatus("PAID");
+            return paid;
+        });
+
+        ShopOrder paid = shopOrderService.payPendingOrder(9L, 1L);
+
+        assertEquals("PAID", paid.getStatus());
+        verify(pointsFeignClient).deductBalance(eq(1L), eq(new BigDecimal("57.0")),
+                eq("BALANCE_PAY"), eq(9L), anyString());
+        verify(orderPaymentService).confirmPaid(9L);
+    }
+
+    @Test
+    void payOrder_balance_shouldNotConfirmNorCompensate_whenInsufficientBalance() {
+        // 业务失败（余额不足）：如实报错、订单仍 PENDING 可重试；不推进支付、不建补偿台账
+        pendingOrder("BALANCE");
+        when(pointsFeignClient.deductBalance(anyLong(), any(BigDecimal.class), anyString(),
+                nullable(Long.class), anyString())).thenReturn(Result.error(400, "余额不足"));
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> shopOrderService.createOrder(1L, 1L, 1, null, "req-b2", "BALANCE"));
+                () -> shopOrderService.payPendingOrder(9L, 1L));
 
         assertTrue(ex.getMessage().contains("余额不足"));
-        // 业务失败不应推进支付、不应建补偿台账（扣款明确未发生）
         verify(orderPaymentService, never()).confirmPaid(any());
         verify(compensationTaskMapper, never()).insert(any(CompensationTask.class));
     }
 
     @Test
-    void createOrder_balance_shouldRecordCompensation_whenFeignTimeout() {
+    void payOrder_balance_shouldRecordCompensation_whenFeignTimeout() {
         // 结果不明（真超时，Feign 抛异常而非降级返回）：回滚后必须写补偿台账对账退款
-        Medicine medicine = createMedicine();
-        when(medicineMapper.selectById(1L)).thenReturn(medicine);
-        when(medicineService.reduceStock(1L, 2)).thenReturn(true);
-        when(shopOrderMapper.insert(any(ShopOrder.class))).thenReturn(1);
-        when(pointsFeignClient.deductBalance(eq(1L), any(BigDecimal.class), eq("BALANCE_PAY"),
-                any(), anyString())).thenThrow(new RuntimeException("Read timed out"));
+        pendingOrder("BALANCE");
+        when(pointsFeignClient.deductBalance(anyLong(), any(BigDecimal.class), anyString(),
+                nullable(Long.class), anyString())).thenThrow(new RuntimeException("Read timed out"));
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> shopOrderService.createOrder(1L, 1L, 2, null, "req-b3", "BALANCE"));
+                () -> shopOrderService.payPendingOrder(9L, 1L));
 
         assertTrue(ex.getMessage().contains("支付服务暂时不可用"));
         ArgumentCaptor<CompensationTask> captor = ArgumentCaptor.forClass(CompensationTask.class);
@@ -686,5 +736,147 @@ class ShopOrderServiceImplTest {
         ArgumentCaptor<Wrapper<ShopOrder>> captor = ArgumentCaptor.forClass(Wrapper.class);
         verify(shopOrderMapper).selectPage(any(), captor.capture());
         return (LambdaQueryWrapper<ShopOrder>) captor.getValue();
+    }
+
+    // ==================== 购物车合并结算（createCartOrder）====================
+
+    private com.chronic.shop.entity.CartItem cartItem(long id, long userId, long medicineId, int quantity) {
+        com.chronic.shop.entity.CartItem item = new com.chronic.shop.entity.CartItem();
+        item.setId(id);
+        item.setUserId(userId);
+        item.setMedicineId(medicineId);
+        item.setQuantity(quantity);
+        return item;
+    }
+
+    private com.chronic.shop.entity.UserCoupon unusedCouponOver(double threshold) {
+        com.chronic.shop.entity.UserCoupon uc = new com.chronic.shop.entity.UserCoupon();
+        uc.setId(9L);
+        uc.setUserId(1L);
+        uc.setCouponId(5L);
+        uc.setStatus("UNUSED");
+        uc.setExpireTime(LocalDateTime.now().plusDays(1));
+        com.chronic.shop.entity.Coupon coupon = new com.chronic.shop.entity.Coupon();
+        coupon.setId(5L);
+        coupon.setThresholdAmount(BigDecimal.valueOf(threshold));
+        coupon.setDiscountAmount(BigDecimal.valueOf(5));
+        when(userCouponMapper.selectById(9L)).thenReturn(uc);
+        when(couponService.getById(5L)).thenReturn(coupon);
+        return uc;
+    }
+
+    @Test
+    void checkout_shouldMergeItemsIntoSingleCartOrder() {
+        // 28.5 x1 + 12 x2 = 52.5，三件商品并成一笔 CART 单
+        when(shopOrderMapper.selectByRequestId(1L, "req-1")).thenReturn(null);
+        when(cartItemMapper.selectBatchIds(any())).thenReturn(java.util.List.of(
+                cartItem(11L, 1L, 1L, 1),
+                cartItem(12L, 1L, 2L, 2)));
+        when(medicineMapper.selectBatchIds(any())).thenReturn(java.util.List.of(
+                createMedicine(),                       // id=1，28.5，积分奖励 28
+                createMedicine(2L, "维生素C片", "12.00", 28)));
+        when(shopOrderMapper.insert(any(ShopOrder.class))).thenReturn(1);
+
+        ShopOrder order = shopOrderService.createCartOrder(1L,
+                java.util.List.of(11L, 12L), null, "req-1", "BALANCE");
+
+        assertNotNull(order);
+        assertEquals("CART", order.getOrderType(), "购物车结算必须是 CART 类型订单");
+        assertEquals(0, new BigDecimal("52.5").compareTo(order.getTotalAmount()));
+        assertEquals(3, order.getQuantity(), "主表 quantity 存总件数（展示兜底）");
+        assertNull(order.getMedicineId(), "CART 单主表 medicine_id 应为 NULL");
+        assertEquals(28 * 1 + 28 * 2, order.getPointsEarned(), "积分奖励按每件商品累加");
+        // 每件商品各扣一次库存
+        verify(medicineService, times(1)).reduceStock(1L, 1);
+        verify(medicineService, times(1)).reduceStock(2L, 2);
+        // 明细两行
+        verify(shopOrderItemMapper, times(2)).insert(any(com.chronic.shop.entity.ShopOrderItem.class));
+        // 已结算的购物车条目要清掉
+        verify(cartItemMapper, times(1)).delete(any());
+    }
+
+    @Test
+    void checkout_couponThresholdJudgedOnCombinedTotal() {
+        // 单买一件 28.5 够不着满 30 的门槛；购物车两件合计 40.5 就够——本功能的动机
+        when(shopOrderMapper.selectByRequestId(1L, "req-1")).thenReturn(null);
+        when(cartItemMapper.selectBatchIds(any())).thenReturn(java.util.List.of(
+                cartItem(11L, 1L, 1L, 1),
+                cartItem(12L, 1L, 2L, 1)));
+        when(medicineMapper.selectBatchIds(any())).thenReturn(java.util.List.of(
+                createMedicine(),
+                createMedicine(2L, "维生素C片", "12.00", 28)));
+        when(shopOrderMapper.insert(any(ShopOrder.class))).thenReturn(1);
+        unusedCouponOver(30);
+
+        ShopOrder order = shopOrderService.createCartOrder(1L,
+                java.util.List.of(11L, 12L), 9L, "req-1", "BALANCE");
+
+        assertEquals(0, new BigDecimal("5").compareTo(order.getDiscountAmount()),
+                "门槛按两件合计 40.5 判定，应能减 5");
+        assertEquals(9L, order.getCouponId());
+        verify(couponService, times(1)).markUsed(eq(9L), eq(1L), eq(order.getId()));
+    }
+
+    @Test
+    void checkout_shouldThrow_whenCombinedTotalBelowThreshold() {
+        // 合计 12 < 门槛 30：即使多件也不能用券（与直购同一套校验）
+        when(shopOrderMapper.selectByRequestId(1L, "req-1")).thenReturn(null);
+        when(cartItemMapper.selectBatchIds(any())).thenReturn(java.util.List.of(
+                cartItem(12L, 1L, 2L, 1)));
+        when(medicineMapper.selectBatchIds(any())).thenReturn(java.util.List.of(
+                createMedicine(2L, "维生素C片", "12.00", 28)));
+        unusedCouponOver(30);
+
+        assertThrows(BusinessException.class, () -> shopOrderService.createCartOrder(1L,
+                java.util.List.of(12L), 9L, "req-1", "BALANCE"));
+        verify(shopOrderMapper, never()).insert(any(ShopOrder.class));
+    }
+
+    @Test
+    void checkout_shouldThrow_whenAnyItemOutOfStock() {
+        when(shopOrderMapper.selectByRequestId(1L, "req-1")).thenReturn(null);
+        when(cartItemMapper.selectBatchIds(any())).thenReturn(java.util.List.of(
+                cartItem(11L, 1L, 1L, 1),
+                cartItem(12L, 1L, 2L, 2)));
+        when(medicineMapper.selectBatchIds(any())).thenReturn(java.util.List.of(
+                createMedicine(),
+                createMedicine(2L, "维生素C片", "12.00", 28)));
+        // 第二件库存不足：reduceStock 抛业务异常（SQL 原子扣减 0 行的转译）；
+        // 第一件正常扣减要先 stub（Mockito 严格模式下未 stub 的调用会直接报错）
+        when(medicineService.reduceStock(1L, 1)).thenReturn(true);
+        doThrow(new BusinessException("库存不足"))
+                .when(medicineService).reduceStock(2L, 2);
+
+        assertThrows(BusinessException.class, () -> shopOrderService.createCartOrder(1L,
+                java.util.List.of(11L, 12L), null, "req-1", "BALANCE"));
+        // 不该建单、不该清购物车（事务回滚由数据库保证，这里是流程短路验证）
+        verify(shopOrderMapper, never()).insert(any(ShopOrder.class));
+        verify(cartItemMapper, never()).delete(any());
+    }
+
+    @Test
+    void checkout_shouldThrow_whenItemBelongsToOtherUser() {
+        when(shopOrderMapper.selectByRequestId(1L, "req-1")).thenReturn(null);
+        when(cartItemMapper.selectBatchIds(any())).thenReturn(java.util.List.of(
+                cartItem(11L, 2L, 1L, 1)));    // 条目属于用户 2
+
+        assertThrows(BusinessException.class, () -> shopOrderService.createCartOrder(1L,
+                java.util.List.of(11L), null, "req-1", "BALANCE"));
+        verify(medicineService, never()).reduceStock(anyLong(), anyInt());
+    }
+
+    @Test
+    void checkout_idempotentReplayReturnsExistingOrder() {
+        ShopOrder existing = new ShopOrder();
+        existing.setId(88L);
+        existing.setOrderNo("old");
+        when(shopOrderMapper.selectByRequestId(1L, "req-1")).thenReturn(existing);
+
+        ShopOrder order = shopOrderService.createCartOrder(1L,
+                java.util.List.of(11L), null, "req-1", "BALANCE");
+
+        assertSame(existing, order);
+        verify(medicineService, never()).reduceStock(anyLong(), anyInt());
+        verify(shopOrderMapper, never()).insert(any(ShopOrder.class));
     }
 }

@@ -53,7 +53,7 @@ describe('format.js', () => {
     })
 
     it('should map POINTS', () => {
-      expect(payText('POINTS')).toBe('积分兑换')
+      expect(payText('POINTS')).toBe('积分支付')
     })
 
     it('should map BALANCE（余额支付）', () => {

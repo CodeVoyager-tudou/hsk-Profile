@@ -8,13 +8,17 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.chronic.common.exception.BusinessException;
 import com.chronic.common.result.Result;
+import com.chronic.shop.entity.CartItem;
 import com.chronic.shop.entity.CompensationTask;
 import com.chronic.shop.entity.Medicine;
 import com.chronic.shop.entity.ShopOrder;
+import com.chronic.shop.entity.ShopOrderItem;
 import com.chronic.shop.entity.UserCoupon;
 import com.chronic.shop.feign.PointsFeignClient;
+import com.chronic.shop.mapper.CartItemMapper;
 import com.chronic.shop.mapper.CompensationTaskMapper;
 import com.chronic.shop.mapper.MedicineMapper;
+import com.chronic.shop.mapper.ShopOrderItemMapper;
 import com.chronic.shop.mapper.ShopOrderMapper;
 import com.chronic.shop.mapper.UserCouponMapper;
 import com.chronic.shop.mq.OrderEventPublisher;
@@ -67,22 +71,18 @@ import java.util.stream.Collectors;
  *       就把「欠这一笔」记到补偿台账里，由定时任务后面重试，直到成功或转人工。</li>
  * </ul>
  *
- * <h3>【三条主流程（注意执行顺序，顺序本身就是正确性的一部分）】</h3>
+ * <h3>【统一收银台模型：三种 payType 一条主流程】</h3>
  * <ul>
- *   <li><b>现金购买</b>：幂等校验 → 扣库存 → 校验并核销优惠券 → 建单(PENDING)
- *       → 事务提交后由支付渠道推进 PAID → 支付成功才发积分（失败留待补偿）
- *       与发订单事件。</li>
- *   <li><b>余额支付</b>：幂等校验 → 扣库存 → 核销优惠券 → 建单(PENDING)
- *       → <b>事务内</b> Feign 扣余额 → confirmPaid 推进 PAID（发积分 + outbox）。
- *       余额是我们自己的账本，无外部渠道回调，同步支付即可；失败分支与积分兑换同构
- *       （业务失败回滚 / 结果不明写 BALANCE_PAY_ROLLBACK 补偿台账）。</li>
- *   <li><b>积分兑换</b>：扣库存 → <b>先建单</b>(PAID) → <b>再扣积分</b>。
- *       顺序很关键：如果反过来（先扣分再建单），一旦建单失败回滚，
- *       积分已经被扣走且没有任何记录可追溯 —— 用户的积分就凭空消失了。
- *       现在的顺序保证任何失败都能「按订单号」找回这笔账。</li>
+ *   <li><b>下单（余额/积分/现金秒杀通用）</b>：幂等校验 → 扣库存 → 校验并核销优惠券
+ *       → 建单(<b>PENDING</b>，此刻不扣任何钱) → 事务提交后挂 30 分钟超时消息。</li>
+ *   <li><b>确认支付（payPendingOrder，按 payType 分派）</b>：BALANCE 此刻扣余额、
+ *       POINTS 此刻扣积分、CASH 走模拟渠道 → confirmPaid 推进 PAID → 支付成功才发积分
+ *       （失败留待补偿）与发订单事件。业务失败（余额/积分不足，Feign 错误解码器透传）
+ *       如实报错，订单仍是 PENDING 可重试；结果不明写补偿台账对账。</li>
  *   <li><b>取消订单</b>：原子抢占取消（防并发重复退）→ 退库存
- *       → 退优惠券 / 退积分 / 退余额；跨服务失败则写补偿台账。</li>
- *   <li><b>超时关单</b>：PENDING 超过 N 分钟自动关掉，归还库存与优惠券。</li>
+ *       → 退优惠券 / 退积分 / 退余额（只退真正扣过的：PENDING 单无资金可退）；跨服务失败则写补偿台账。</li>
+ *   <li><b>超时关单</b>：PENDING 超过 N 分钟自动关掉，归还库存与优惠券
+ *       （钱还没扣，无退款动作）。</li>
  * </ul>
  *
  * @author chronic
@@ -106,6 +106,10 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
     private final PayTimeoutPublisher payTimeoutPublisher;
     /** 秒杀单（CASH PENDING）被关单/取消时释放名额：不释放就会每笔未支付都永久吃掉一个名额 */
     private final SeckillSlotService seckillSlotService;
+    /** 购物车合并结算：读勾选条目 + 结算成功后清已结算项 */
+    private final CartItemMapper cartItemMapper;
+    /** 订单明细：CART 单多行、SINGLE 单一行，取消/关单退库存按明细循环 */
+    private final ShopOrderItemMapper shopOrderItemMapper;
 
     /** 待支付订单超时关单时间（分钟） */
     @Value("${chronic.pay.pending-timeout-minutes:30}")
@@ -133,15 +137,14 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
     }
 
     /**
-     * 下单（指定支付方式）
+     * 下单（指定支付方式）——统一收银台模型
      *
-     * <p><b>CASH</b>：建单 PENDING → 事务提交后由模拟渠道推进（即时确认或等回调）。</p>
+     * <p><b>BALANCE / CASH</b> 都是建单 PENDING → 挂超时消息 → 收银台确认支付才真正扣钱
+     * （BALANCE 在 payPendingOrder 里此刻扣余额，CASH 走模拟渠道；BALANCE 是普通购买
+     * 唯一现金外入口，CASH 现在只来自秒杀链路）。</p>
      *
-     * <p><b>BALANCE</b>：余额是我们自己账本上的钱，不存在"外部渠道异步回调"，
-     * 所以走<b>同步支付</b>（与积分兑换 J-03 修复后的模式同构）：
-     * 建单 PENDING → 事务内 Feign 扣余额 → confirmPaid 推进 PAID。
-     * 余额不足等业务失败会抛异常回滚整个本地事务（库存/订单/优惠券一并撤销），
-     * 用户立即看到明确原因；扣款结果不明（超时）则回滚后写补偿台账对账退款。</p>
+     * <p>扣款动作不在本方法：余额不足等业务失败发生在「确认支付」时，订单保持 PENDING
+     * 可重试或超时关单，不产生半截状态。</p>
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -181,6 +184,7 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
         order.setPayType(payTypeNormalized);
         // 先落 PENDING：现金单由渠道回调推进；余额单在扣款成功后由 confirmPaid 原子推进
         order.setStatus("PENDING");
+        order.setOrderType("SINGLE");
 
         // 使用优惠券，计算抵扣金额
         if (userCouponId != null) {
@@ -197,16 +201,146 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
             log.warn("并发重复提交（幂等键撞键）: userId={}, requestId={}", userId, order.getRequestId());
             throw new BusinessException("请勿重复提交，订单已存在");
         }
+        // 单商品直购也写一行明细（order_type=SINGLE 已在建单时设置）：取消/关单退库存
+        // 统一按明细循环，不为"有没有明细"维护两套逻辑；秒杀单是直插主表的历史路径，
+        // 无明细，退库存时按主表单商品字段兜底
+        insertOrderItem(order.getId(), medicineId, medicine.getName(), unitPrice, quantity);
         // 原子核销优惠券
         if (userCouponId != null) {
             couponService.markUsed(userCouponId, userId, order.getId());
         }
-        if ("BALANCE".equals(payTypeNormalized)) {
-            // 余额支付：事务内同步扣款 + 推进 PAID（见方法注释）
-            payWithBalance(order);
-            return order;
+        // 统一收银台模型：BALANCE 建单后也是 PENDING（此刻不扣余额），
+        // 挂上超时消息，由收银台确认支付（payPendingOrder）才真正扣款
+        beginPaymentAfterCreated(order);
+        return order;
+    }
+
+    /**
+     * 购物车合并结算：勾选的 N 件商品合成<b>一笔</b>订单（order_type=CART）。
+     *
+     * <p><b>为什么要有这个方法</b>：满减券的门槛（threshold_amount）是对着订单总额比的，
+     * 而直购一笔订单只有一个商品——单买一件 12 元的药永远够不着"满 30 减 5"。
+     * 购物车把多件商品并进一笔订单后，总额跨商品聚合，券就真正用得上了；
+     * 券仍然核销到这一笔订单（user_coupon 一券一单的约束不用改）。</p>
+     *
+     * <p><b>与直购共用的部分</b>：幂等键（同一张表的唯一键）、库存扣减 SQL、
+     * 券校验/核销、支付链路（CASH 挂超时消息 / BALANCE 事务内同步扣款）。
+     * 不同只在"一个商品 → N 个商品"，所以总额与明细行是多件的，其余口径完全一致。</p>
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ShopOrder createCartOrder(Long userId, List<Long> itemIds, Long userCouponId,
+                                     String requestId, String payType) {
+        String payTypeNormalized = normalizePayType(payType);
+        // 购物车结算只有余额一条支付入口：现金通道仅秒杀单保留（见 ShopOrderController），
+        // 积分兑换是单商品链路（exchangeOrder），多商品合单没有"积分价合计"的对账口径，不做
+        if ("CASH".equals(payTypeNormalized)) {
+            throw new BusinessException(400, "购物车结算仅支持余额支付");
         }
-        // 支付确认放到事务提交之后：既不占用数据库事务，也保证订单已可见
+        // 0. 幂等：与直购共用 shop_order(user_id, request_id) 唯一键，双击/重试返回原单
+        if (requestId != null && !requestId.trim().isEmpty()) {
+            ShopOrder existing = baseMapper.selectByRequestId(userId, requestId.trim());
+            if (existing != null) {
+                log.info("购物车结算重复提交命中幂等键，返回原订单: userId={}, requestId={}, orderNo={}",
+                        userId, requestId, existing.getOrderNo());
+                return existing;
+            }
+        }
+        if (itemIds == null || itemIds.isEmpty()) {
+            throw new BusinessException("请先勾选要结算的商品");
+        }
+
+        // 1. 读购物车条目并校验归属。条目数量要一致：少了一条说明正被人改动或已失效，
+        //    让用户刷新重选，而不是悄悄结算剩下的。归属逐条比对——itemId 是行主键，
+        //    不校验的话拿到别人的条目 id 就能把别人的东西结算走（IDOR）
+        List<CartItem> cartItems = cartItemMapper.selectBatchIds(itemIds);
+        if (cartItems.size() != itemIds.size()) {
+            throw new BusinessException("部分购物车条目已失效，请刷新后重试");
+        }
+        for (CartItem cartItem : cartItems) {
+            if (!cartItem.getUserId().equals(userId)) {
+                throw new BusinessException(403, "无权结算他人购物车");
+            }
+        }
+
+        // 2. 批量取药品 → 逐件原子扣库存。同一事务里任一件"库存不足"抛错，
+        //    前面扣掉的全部回滚，不会出现"扣了 A 的库存、B 却没货"的半截状态
+        List<Long> medicineIds = cartItems.stream()
+                .map(CartItem::getMedicineId).distinct().collect(Collectors.toList());
+        Map<Long, Medicine> medicineById = medicineMapper.selectBatchIds(medicineIds).stream()
+                .collect(Collectors.toMap(Medicine::getId, Function.identity(), (a, b) -> a));
+        int totalQuantity = 0;
+        int pointsEarned = 0;
+        BigDecimal totalAmount = BigDecimal.ZERO;
+        List<ShopOrderItem> orderItems = new java.util.ArrayList<>();
+        for (CartItem cartItem : cartItems) {
+            Medicine medicine = medicineById.get(cartItem.getMedicineId());
+            if (medicine == null || medicine.getStatus() == 0) {
+                throw new BusinessException("部分商品已下架或不存在，请刷新购物车");
+            }
+            checkQuantity(cartItem.getQuantity());
+            medicineService.reduceStock(medicine.getId(), cartItem.getQuantity());
+
+            BigDecimal unitPrice = medicine.getPrice();
+            BigDecimal subtotal = unitPrice.multiply(BigDecimal.valueOf(cartItem.getQuantity()));
+            totalAmount = totalAmount.add(subtotal);
+            totalQuantity += cartItem.getQuantity();
+            pointsEarned += Optional.ofNullable(medicine.getPointsReward()).orElse(0) * cartItem.getQuantity();
+
+            ShopOrderItem orderItem = new ShopOrderItem();
+            orderItem.setMedicineId(medicine.getId());
+            orderItem.setMedicineName(medicine.getName());
+            orderItem.setUnitPrice(unitPrice);
+            orderItem.setQuantity(cartItem.getQuantity());
+            orderItem.setSubtotal(subtotal);
+            orderItems.add(orderItem);
+        }
+
+        // 3. 建单：主表的单商品字段只作可读兜底（积分备注/余额备注/关键词搜索），
+        //    medicine_name 存"购物车结算(N件)"摘要，真实商品信息全部在明细里
+        ShopOrder order = new ShopOrder();
+        order.setOrderNo(IdUtil.fastSimpleUUID());
+        order.setRequestId(requestId == null ? null : requestId.trim());
+        order.setUserId(userId);
+        order.setOrderType("CART");
+        order.setMedicineId(null);
+        order.setMedicineName("购物车结算(" + totalQuantity + "件)");
+        order.setQuantity(totalQuantity);
+        order.setUnitPrice(BigDecimal.ZERO);
+        order.setTotalAmount(totalAmount);
+        order.setPointsEarned(pointsEarned);
+        order.setPointsStatus(0);
+        order.setPayType(payTypeNormalized);
+        order.setStatus("PENDING");
+
+        if (userCouponId != null) {
+            // 与直购同一套券校验：门槛对着多件合计的 totalAmount 比——这正是本功能的动机
+            BigDecimal discount = checkCoupon(userCouponId, userId, totalAmount);
+            order.setCouponId(userCouponId);
+            order.setDiscountAmount(discount);
+        }
+        try {
+            save(order);
+        } catch (DuplicateKeyException e) {
+            log.warn("购物车结算并发重复提交（幂等键撞键）: userId={}, requestId={}", userId, order.getRequestId());
+            throw new BusinessException("请勿重复提交，订单已存在");
+        }
+
+        // 4. 写明细行、核销券、清掉已结算的购物车条目（清车带 userId 条件，双保险）
+        for (ShopOrderItem orderItem : orderItems) {
+            orderItem.setOrderId(order.getId());
+            shopOrderItemMapper.insert(orderItem);
+        }
+        if (userCouponId != null) {
+            couponService.markUsed(userCouponId, userId, order.getId());
+        }
+        cartItemMapper.delete(new LambdaQueryWrapper<CartItem>()
+                .eq(CartItem::getUserId, userId)
+                .in(CartItem::getId, itemIds));
+        log.info("购物车结算成功: orderNo={}, userId={}, 条目数={}, 合计={}, 用券={}",
+                order.getOrderNo(), userId, orderItems.size(), totalAmount, userCouponId != null);
+
+        // 5. 与直购同一支付链路：PENDING + 超时消息，收银台确认才扣余额
         beginPaymentAfterCreated(order);
         return order;
     }
@@ -238,11 +372,12 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
     }
 
     /**
-     * 余额支付（调用方处于 createOrder 事务内）：
+     * 余额支付确认（调用方处于 {@link #payPendingOrder} 的事务内）：
      * Feign 扣余额（幂等唯一键）→ confirmPaid 推进 PAID + 发积分 + 写 outbox。
      *
-     * <p>失败分支与积分兑换完全同构：
-     * ①业务失败（余额不足/降级返回非200）→ 抛异常回滚本地事务，扣款要么没发生要么明确失败；
+     * <p>失败分支与积分确认完全同构：
+     * ①业务失败（余额不足/降级返回非200，经 Feign 错误解码器透传为 BusinessException）
+     *   → 抛异常回滚本地事务，扣款要么没发生要么明确失败，订单仍是 PENDING 可重试；
      * ②结果不明（Feign 真超时/本地推进失败）→ 回滚后写补偿台账 BALANCE_PAY_ROLLBACK，
      * 由 CompensationRetryJob 核对订单状态并退还多扣的余额。</p>
      */
@@ -282,18 +417,53 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
     }
 
     /**
-     * 继续支付待支付订单（PENDING 现金单）：归属校验 + 状态校验后走支付确认。
-     * 余额订单为同步支付（成功即 PAID、失败即回滚），不存在 PENDING 态。
+     * 收银台确认支付（PENDING 单统一入口）：按支付方式分派真正的扣款动作。
+     *
+     * <ul>
+     *   <li><b>CASH</b>（秒杀单等）：走模拟渠道确认，直接推进 PAID；</li>
+     *   <li><b>BALANCE</b>：此刻才扣余额（事务内 Feign）→ 推进 PAID；
+     *       余额不足等业务失败如实报错，订单仍是 PENDING 可重试或等超时关单；</li>
+     *   <li><b>POINTS</b>：此刻才扣积分 → 推进 PAID，失败语义同上。</li>
+     * </ul>
+     *
+     * <p>整体在一个事务里：扣款与状态推进要么一起成功，要么一起回滚；
+     * 扣款结果不明（Feign 超时）由 payWithBalance/payPoints 内部写补偿台账对账。</p>
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public ShopOrder payPendingOrder(Long orderId, Long userId) {
         ShopOrder order = getOrderForUser(orderId, userId);
         if (!"PENDING".equals(order.getStatus())) {
             throw new BusinessException("订单当前状态不可支付: " + order.getStatus());
         }
-        if (!"CASH".equals(order.getPayType())) {
-            throw new BusinessException("该订单不支持收银台支付: " + order.getPayType());
+        String payType = order.getPayType();
+        if ("BALANCE".equals(payType)) {
+            // 余额单：扣余额 + confirmPaid 推进 PAID（payWithBalance 内部同步状态到 order）
+            payWithBalance(order);
+            return order;
         }
+        if ("POINTS".equals(payType)) {
+            // 积分单：此刻才真正扣积分。业务失败（积分不足，ErrorDecoder 透传）就地抛出回滚，
+            // 订单保持 PENDING——用户可以充值/攒积分后重试，或等 30 分钟超时关单退库存
+            Integer pointsUsed = order.getPointsUsed();
+            try {
+                Result<Boolean> deductResult = pointsFeignClient.deductPoints(order.getUserId(), pointsUsed,
+                        "POINTS_EXCHANGE", order.getId(), "积分兑换 " + order.getMedicineName() + " x" + order.getQuantity());
+                if (deductResult == null || deductResult.getCode() == null || deductResult.getCode() != 200) {
+                    String msg = deductResult == null ? "积分服务不可用" : deductResult.getMessage();
+                    throw new BusinessException(msg != null ? msg : "积分扣减失败");
+                }
+            } catch (BusinessException e) {
+                throw e;
+            } catch (Exception e) {
+                // 结果不明：事务回滚后写补偿台账（POINTS_EXCHANGE_ROLLBACK 语义=按订单核对退分）
+                recordCompensationAfterRollback("POINTS_EXCHANGE_ROLLBACK", order, pointsUsed,
+                        e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+                throw new BusinessException("积分服务暂时不可用，请稍后重试");
+            }
+            return orderPaymentService.confirmPaid(orderId);
+        }
+        // CASH（秒杀单等）：模拟渠道确认
         return orderPaymentService.confirmPaid(orderId);
     }
 
@@ -320,16 +490,17 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
     }
 
     /**
-     * 积分兑换下单
+     * 积分兑换下单（建 PENDING 单，收银台确认支付时才真正扣积分）
      *
-     * <p><b>J-03 修复</b>：原实现把「远程扣积分」放在本地事务**内部**，且 Feign readTimeout=3s。
-     * 于是存在这样的窗口：扣分已在 points-service 生效，但本地事务随后回滚
-     * （库存不足、订单写库失败、连接超时导致异常）——订单没了、库存归还了、
-     * 而积分**已经被扣走且补偿台账为空**（该分支只在扣分返回非 200 时建账，
-     * 抛异常时事务回滚会连台账一起回滚），造成积分永久丢失。</p>
+     * <p><b>为什么下单时不扣积分</b>：统一收银台模型——余额/积分/现金三种单都是
+     * "先建 PENDING、收银台确认才扣钱、30 分钟不付自动关单"。积分在确认支付那一刻才扣，
+     * 关单/取消时积分从未离开过账户，天然不需要"退积分"，也不存在 J-03 当年
+     * "扣了分却没有任何订单可追溯"的窗口——那套「先扣资产再落单」的顺序本来就是
+     * 同步支付模型下不得已的设计，PENDING 化之后被整体取代。</p>
      *
-     * <p>修复策略：**先扣积分，成功后再落订单**。这样任何失败路径都只可能「没扣分」，
-     * 不存在「扣了分却没有订单」。若后续落单失败，则写补偿台账把积分退回。</p>
+     * <p>确认支付路径在 {@link #payPendingOrder} 的 POINTS 分支：远程扣分失败
+     * （积分不足等业务失败，经 Feign 错误解码器透传）就地报错、订单仍可重试或超时关单；
+     * 结果不明（真超时）写补偿台账 POINTS_EXCHANGE_ROLLBACK 对账退分。</p>
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -341,7 +512,7 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
         }
         int pointsNeeded = medicine.getPointsPrice() * quantity;
 
-        // 1) 先扣库存（本地、原子），失败直接抛错，此时尚未扣积分
+        // 先扣库存（本地、原子）。此时积分尚未扣，后续任何失败（含超时关单）只需回补库存
         medicineService.reduceStock(medicineId, quantity);
 
         ShopOrder order = new ShopOrder();
@@ -354,41 +525,17 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
         order.setTotalAmount(medicine.getPrice().multiply(BigDecimal.valueOf(quantity)));
         order.setPointsEarned(0);
         order.setPayType("POINTS");
+        // points_used 在这里是"应付积分"，真正扣取发生在收银台确认支付（payPendingOrder）
         order.setPointsUsed(pointsNeeded);
         order.setDiscountAmount(BigDecimal.ZERO);
-        // 积分兑换在下单时即完成扣分，故直接置 PAID
-        order.setStatus("PAID");
-        order.setPayTime(LocalDateTime.now());
+        order.setStatus("PENDING");
+        order.setOrderType("SINGLE");
         save(order);
+        insertOrderItem(order.getId(), medicineId, medicine.getName(), medicine.getPrice(), quantity);
 
-        // 2) 落单后再扣积分：此时订单已存在，扣分失败可按订单号精确补偿（积分不会被吞）
-        //    远程业务异常返回 HTTP 200 + code!=200，必须显式检查
-        try {
-            Result<Boolean> deductResult = pointsFeignClient.deductPoints(userId, pointsNeeded,
-                    "POINTS_EXCHANGE", order.getId(), "积分兑换 " + medicine.getName() + " x" + quantity);
-            if (deductResult == null || deductResult.getCode() == null || deductResult.getCode() != 200) {
-                String msg = deductResult == null ? "积分服务不可用" : deductResult.getMessage();
-                throw new BusinessException(msg != null ? msg : "积分扣减失败");
-            }
-        } catch (BusinessException e) {
-            // 业务性失败（如余额不足）：就地回滚整个事务，库存与订单一并撤销，无需补偿
-            throw e;
-        } catch (Exception e) {
-            // 非业务性异常（超时/网络/熔断）：**无法确定积分是否已扣**。
-            // 抛错回滚本地事务（撤销订单与库存），并记补偿台账以便对账，
-            // 补偿任务的语义是「按订单核对并退还多扣的积分」。
-            //
-            // 注意：此处**不能**直接调 recordCompensation —— 它会在当前事务内 INSERT，
-            // 而紧接着的 throw 会回滚事务，把台账一起撤销（正是原缺陷的翻版）。
-            // 必须注册到事务回滚之后才写入。
-            recordCompensationAfterRollback("POINTS_EXCHANGE_ROLLBACK", order, pointsNeeded,
-                    e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
-            throw new BusinessException("积分服务暂时不可用，请稍后重试");
-        }
-        // J-14：在**当前事务内**把订单事件写入 outbox（与订单同生共死），
-        // 真正投递交给 OrderEventRelayJob。
-        orderEventPublisher.enqueue(order);
-        log.info("积分兑换订单创建成功: orderNo={}, userId={}, pointsUsed={}",
+        // 与直购同一套"建单即挂超时消息"的启动逻辑：30 分钟不确认支付自动关单退库存
+        beginPaymentAfterCreated(order);
+        log.info("积分兑换订单创建成功(PENDING): orderNo={}, userId={}, 应付积分={}",
                 order.getOrderNo(), userId, pointsNeeded);
         return order;
     }
@@ -443,8 +590,8 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
         if (baseMapper.cancelIfNotCancelled(orderId) == 0) {
             throw new BusinessException("订单已取消");
         }
-        // 退还库存
-        medicineService.restoreStock(order.getMedicineId(), order.getQuantity());
+        // 退还库存：有明细按明细逐件回补（CART/SINGLE 单），无明细按主表单商品字段兜底（秒杀单）
+        restoreStockForOrder(order);
         // 秒杀单：名额也一并释放（普通单无此字段，内部直接跳过）
         releaseSeckillSlotIfAny(order);
         // 根据支付方式分别处理
@@ -479,8 +626,12 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
                 // 改为只更新退款两列。
                 baseMapper.updateRefundInfo(orderId, refundAmount, LocalDateTime.now());
             }
-        } else if ("POINTS".equals(order.getPayType()) && order.getPointsUsed() != null && order.getPointsUsed() > 0) {
-            // 积分订单：退还积分，失败写入补偿台账由定时任务重试
+        } else if ("POINTS".equals(order.getPayType())
+                && "PAID".equals(order.getStatus())
+                && order.getPointsUsed() != null && order.getPointsUsed() > 0) {
+            // 积分订单：退还积分，失败写入补偿台账由定时任务重试。
+            // 必须限定 PAID：统一收银台模型下 PENDING 积分单还没扣过积分
+            //（确认支付才扣），PENDING 取消再退就是凭空加分
             try {
                 Result<Boolean> refundResult = pointsFeignClient.refundPoints(order.getUserId(),
                         order.getPointsUsed(), "POINTS_REFUND", order.getId(), "兑换取消退回积分");
@@ -497,8 +648,8 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
                 couponService.markUnused(order.getCouponId(), order.getId());
             }
             if ("PAID".equals(order.getStatus())) {
-                // 余额单不存在 PENDING 态（同步支付：成功即 PAID、失败即整单回滚），
-                // 走到这里必然是已扣款的 PAID 单，退款金额 = 应付金额
+                // 只退真正扣过的钱：统一收银台模型下 PENDING 余额单没扣过款，
+                // 走到这里必然是收银台确认支付过的 PAID 单，退款金额 = 应付金额
                 BigDecimal payable = payableAmount(order);
                 try {
                     Result<Boolean> refundResult = pointsFeignClient.refundBalance(order.getUserId(), payable,
@@ -546,6 +697,7 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
         }
         baseMapper.selectPage(page, wrapper);
         enrichMedicineImage(page.getRecords());
+        enrichOrderItems(page.getRecords());
         return page;
     }
 
@@ -719,11 +871,13 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
      * @return true = 本这次调用完成了关单；false = 订单已是 PAID/CANCELLED，跳过
      */
     private boolean closeSinglePendingOrder(ShopOrder order) {
-        // 防御：超时关单只针对现金 PENDING 单（余额单无 PENDING 态、积分单建单即 PAID）。
-        // 本方法只归还库存与优惠券、不退任何资金——若未来引入"非现金 PENDING"
-        // （如异步银行渠道的余额单），直接关单会吞掉用户资产，必须先走对应退款链路。
-        if (!"CASH".equals(order.getPayType())) {
-            log.warn("关单跳过（非现金 PENDING 单不适用超时关单，需人工/补偿介入）: orderNo={}, payType={}",
+        // 三种 payType 的 PENDING 单都适用超时关单：统一收银台模型下，余额/积分单在
+        // 确认支付前**没有扣过任何资金**，关单只需归还库存与优惠券，无退款动作；
+        // 现金 PENDING（秒杀单）同理只退库存/券/秒杀名额。
+        // 若未来引入"下单即扣款"的 PENDING 形态，这里必须先走对应退款链路再关单。
+        if (!"CASH".equals(order.getPayType()) && !"BALANCE".equals(order.getPayType())
+                && !"POINTS".equals(order.getPayType())) {
+            log.warn("关单跳过（未知支付方式不适用超时关单，需人工/补偿介入）: orderNo={}, payType={}",
                     order.getOrderNo(), order.getPayType());
             return false;
         }
@@ -732,7 +886,7 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
                     order.getOrderNo(), order.getStatus());
             return false;
         }
-        medicineService.restoreStock(order.getMedicineId(), order.getQuantity());
+        restoreStockForOrder(order);
         if (order.getCouponId() != null) {
             // 同样传 orderId：只有当这张券确实由本单占用、且仍未过期时才退回（J-06）
             couponService.markUnused(order.getCouponId(), order.getId());
@@ -783,6 +937,7 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
         }
         // 详情页（含收银台）也要显示药品图，同样补一次
         enrichMedicineImage(java.util.Collections.singletonList(order));
+        enrichOrderItems(java.util.Collections.singletonList(order));
         return order;
     }
 
@@ -802,6 +957,7 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
             throw new BusinessException("订单不存在");
         }
         enrichMedicineImage(java.util.Collections.singletonList(order));
+        enrichOrderItems(java.util.Collections.singletonList(order));
         return order;
     }
 
@@ -817,6 +973,7 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
                 .orderByDesc(ShopOrder::getCreateTime);
         baseMapper.selectPage(page, wrapper);
         enrichMedicineImage(page.getRecords());
+        enrichOrderItems(page.getRecords());
         return page;
     }
 
@@ -853,6 +1010,82 @@ public class ShopOrderServiceImpl extends ServiceImpl<ShopOrderMapper, ShopOrder
     private void checkQuantity(Integer quantity) {
         if (quantity == null || quantity < 1 || quantity > MAX_QUANTITY) {
             throw new BusinessException("购买数量必须在 1~" + MAX_QUANTITY + " 之间");
+        }
+    }
+
+    /**
+     * 退库存统一入口：有明细的订单（SINGLE 单 1 行、CART 单 N 行）按明细逐件回补；
+     * 无明细的（秒杀单直插主表的历史路径）按主表单商品字段回补——老行为原样保留。
+     * 放一个方法里，取消与超时关单两条路径共用，不会出现"关单退了、取消没退"的口径分叉。
+     */
+    private void restoreStockForOrder(ShopOrder order) {
+        List<ShopOrderItem> items = shopOrderItemMapper.selectList(
+                new LambdaQueryWrapper<ShopOrderItem>().eq(ShopOrderItem::getOrderId, order.getId()));
+        if (items.isEmpty()) {
+            medicineService.restoreStock(order.getMedicineId(), order.getQuantity());
+            return;
+        }
+        for (ShopOrderItem item : items) {
+            medicineService.restoreStock(item.getMedicineId(), item.getQuantity());
+        }
+    }
+
+    /**
+     * 写一行订单明细（SINGLE 单 1 行、CART 单 N 行）。名称/单价是下单时的快照，
+     * 药品后来改价改名不影响历史订单的对账口径。
+     */
+    private void insertOrderItem(Long orderId, Long medicineId, String medicineName,
+                                 BigDecimal unitPrice, Integer quantity) {
+        ShopOrderItem orderItem = new ShopOrderItem();
+        orderItem.setOrderId(orderId);
+        orderItem.setMedicineId(medicineId);
+        orderItem.setMedicineName(medicineName);
+        orderItem.setUnitPrice(unitPrice);
+        orderItem.setQuantity(quantity);
+        orderItem.setSubtotal(unitPrice.multiply(BigDecimal.valueOf(quantity)));
+        shopOrderItemMapper.insert(orderItem);
+    }
+
+    /**
+     * 回填订单明细（含每件的药品图）。所有订单查询出口（列表/搜索/详情）都调用它，
+     * CART 单前端按明细渲染商品；SINGLE 单也有一行，展示逻辑可以统一走明细。
+     *
+     * <p>药名/单价是明细自带的快照，只有图片需要按 medicineId 现查——
+     * 两次批量查询搞定一页订单，不逐条查库。CART 单主表 medicineId 为 NULL
+     * 导致主表图片回填（enrichMedicineImage）跳过，这里顺手把首件商品的图
+     * 回填到主表 medicineImage，订单列表缩略图不用特判。</p>
+     */
+    private void enrichOrderItems(List<ShopOrder> orders) {
+        if (orders == null || orders.isEmpty()) {
+            return;
+        }
+        List<Long> orderIds = orders.stream().map(ShopOrder::getId).collect(Collectors.toList());
+        List<ShopOrderItem> allItems = shopOrderItemMapper.selectList(
+                new LambdaQueryWrapper<ShopOrderItem>().in(ShopOrderItem::getOrderId, orderIds));
+        if (allItems.isEmpty()) {
+            return;
+        }
+        Map<Long, List<ShopOrderItem>> byOrder = allItems.stream()
+                .collect(Collectors.groupingBy(ShopOrderItem::getOrderId));
+        List<Long> medicineIds = allItems.stream()
+                .map(ShopOrderItem::getMedicineId).distinct().collect(Collectors.toList());
+        Map<Long, Medicine> medicineById = medicineMapper.selectBatchIds(medicineIds).stream()
+                .collect(Collectors.toMap(Medicine::getId, Function.identity(), (a, b) -> a));
+        for (ShopOrder order : orders) {
+            List<ShopOrderItem> items = byOrder.get(order.getId());
+            if (items == null) {
+                continue;
+            }
+            for (ShopOrderItem item : items) {
+                Medicine medicine = medicineById.get(item.getMedicineId());
+                if (medicine != null) {
+                    item.setImageUrl(medicine.getImageUrl());
+                }
+            }
+            order.setItems(items);
+            if (order.getMedicineImage() == null) {
+                order.setMedicineImage(items.get(0).getImageUrl());
+            }
         }
     }
 

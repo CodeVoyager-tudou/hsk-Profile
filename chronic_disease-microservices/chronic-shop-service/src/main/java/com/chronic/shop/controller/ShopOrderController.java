@@ -2,6 +2,7 @@ package com.chronic.shop.controller;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.chronic.common.result.Result;
+import com.chronic.shop.dto.CartCheckoutRequest;
 import com.chronic.shop.entity.ShopOrder;
 import com.chronic.shop.pay.OrderPaymentService;
 import com.chronic.shop.service.ShopOrderService;
@@ -36,16 +37,31 @@ public class ShopOrderController {
     @Value("${chronic.internal-token}")
     private String internalToken;
 
-    @Operation(summary = "创建订单（购买药品，可携带优惠券；X-Request-Id 幂等防重；payType=CASH现金/BALANCE余额）")
+    @Operation(summary = "创建订单（余额购买药品，可携带优惠券；X-Request-Id 幂等防重）。"
+            + "普通购买只有余额支付一条入口，现金通道仅存在于秒杀单（收银台继续支付照常可用）")
     @PostMapping("/create")
     public Result<ShopOrder> createOrder(@RequestHeader("X-User-Id") Long userId,
                                          @RequestParam Long medicineId,
                                          @RequestParam Integer quantity,
                                          @RequestParam(required = false) Long userCouponId,
                                          @RequestHeader(value = "X-Request-Id", required = false) String requestId,
-                                         @RequestParam(defaultValue = "CASH") String payType) {
+                                         @RequestParam(defaultValue = "BALANCE") String payType) {
+        // 对外入口不接受 CASH：模拟现金渠道只服务秒杀单（内部链路直插订单，不经本接口）。
+        // 放 Controller 而不是 Service：createOrder 的 4 参重载（内部/测试用）仍默认 CASH。
+        if ("CASH".equalsIgnoreCase(payType)) {
+            return Result.error(400, "现金支付已下线，请使用余额支付（积分兑换走独立入口）");
+        }
         return Result.success(shopOrderService.createOrder(userId, medicineId, quantity, userCouponId,
                 requestId, payType));
+    }
+
+    @Operation(summary = "购物车合并结算：勾选的购物车条目合成一笔订单，满减券门槛按合计金额判定")
+    @PostMapping("/cart/checkout")
+    public Result<ShopOrder> checkoutCart(@RequestHeader("X-User-Id") Long userId,
+                                          @jakarta.validation.Valid @RequestBody CartCheckoutRequest request,
+                                          @RequestHeader(value = "X-Request-Id", required = false) String requestId) {
+        return Result.success(shopOrderService.createCartOrder(userId, request.getItemIds(),
+                request.getUserCouponId(), requestId, request.getPayType()));
     }
 
     @Operation(summary = "积分兑换药品")
